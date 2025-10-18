@@ -151,7 +151,8 @@ networks:
 
 ### Example label usage:
 
-```
+```yaml
+services:
   # Example: Container on same network as NPM (npm.proxy.host auto-detected)
   myapp:
     image: nginx:alpine
@@ -200,12 +201,6 @@ docker run -d \
   -e NPM_PASSWORD=changeme \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   ghcr.io/redth/npm-docker-sync:latest
-```
-
-## Building
-
-```bash
-docker build -t npm-docker-sync .
 ```
 
 ## How It Works
@@ -302,6 +297,8 @@ var npmUrl = NginxProxyManagerClient.GetManagedNpmUrl(proxyHost);
 
 The mirror sync feature allows you to automatically synchronize your primary NPM instance to one or more secondary instances for high availability and redundancy.
 
+> NOTE: If you _only_ want the sync functionality, or prefer to run it as a separate container, or just want to check out a different project, have a look at https://github.com/jeffersonraimon/npm-sync
+
 ### Mirror Sync Configuration
 
 Configure mirror sync using these optional environment variables:
@@ -354,6 +351,11 @@ services:
     restart: unless-stopped
 ```
 
+## Building
+
+```bash
+docker build -t npm-docker-sync .
+```
 
 ## Development
 
