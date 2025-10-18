@@ -1,0 +1,101 @@
+# networks:
+#   proxy:
+#     driver: bridge
+
+services:
+  # The npm-docker-sync service
+  npm-docker-sync:
+    build: .
+    container_name: npm-docker-sync
+    environment:
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - NPM_URL=https://urls.jjagd.net
+      - NPM_EMAIL=${NPM_EMAIL:-admin@email.com}
+      - NPM_PASSWORD=${NPM_PASSWORD:-changeme}
+      - NPM_CONTAINER_NAME=NGinx-Proxy-Manager
+      - DOCKER_HOST_IP=192.168.1.100  # Set to your host machine's IP
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # Enable host.docker.internal on Linux
+    restart: unless-stopped
+    # depends_on:
+    #   - nginx-proxy-manager
+
+  # Nginx Proxy Manager (mock - replace with your actual NPM instance)
+  nginx-proxy-manager:
+    image: jc21/nginx-proxy-manager:latest
+    container_name: NGinx-Proxy-Manager
+    ports:
+      - "8980:80"
+      - "8981:81"
+      - "8443:443"
+    environment:
+      - DB_SQLITE_FILE=/data/database.sqlite
+    volumes:
+      - npm_data:/data
+      - npm_letsencrypt:/etc/letsencrypt
+    networks:
+      - proxy
+    restart: unless-stopped
+
+  # Test service 1: Simple echo server on same network
+  echo-service:
+    image: hashicorp/http-echo:latest
+    container_name: echo-service
+    command: ["-text=Hello from echo-service on port 5678!"]
+    networks:
+      - proxy
+    labels:
+      npm.proxy.domains: "echo.local.test"
+      npm.proxy.port: "5678"
+      # npm.proxy.host will be auto-detected as "echo-service"
+      npm.proxy.scheme: "http"
+      npm.proxy.block_common_exploits: "true"
+      npm.proxy.websockets: "false"
+
+  # # Test service 2: Another echo server with SSL configured
+  echo-service-2:
+    image: hashicorp/http-echo:latest
+    container_name: echo-service-2
+    command: ["-text=Hello from echo-service-2! This one wants SSL."]
+    networks:
+      - proxy
+    labels:
+      npm.proxy.domains: "echo2.local.test,www.echo2.local.test"
+      npm.proxy.port: "5678"
+      # npm.proxy.host will be auto-detected as "echo-service-2"
+      npm.proxy.scheme: "http"
+      npm.proxy.ssl.force: "false"  # Set to true if you have a certificate configured
+      npm.proxy.block_common_exploits: "true"
+
+  # Test service 3: Echo server NOT on proxy network (will use Docker host IP)
+  echo-external:
+    image: hashicorp/http-echo:latest
+    container_name: echo-external
+    command: ["-text=Hello from echo-external! I'm on a different network."]
+    ports:
+      - "5679:5678"  # Expose port so Docker host can reach it
+    # Not connected to proxy network
+    labels:
+      npm.proxy.domains: "mbtest.jjagd.net"
+      npm.proxy.port: "5679"
+      npm.proxy.ssl.force: true
+      # npm.proxy.host will be auto-detected as Docker host IP
+
+  # Test service 4: Echo with manual override
+  echo-manual:
+   image: hashicorp/http-echo:latest
+   container_name: echo-manual
+   command: ["-text=Hello from echo-manual with explicit host!"]
+   networks:
+     - proxy
+   labels:
+     npm.proxy.domains: "manual.local.test"
+     npm.proxy.host: "echo-manual"  # Explicitly specified
+     npm.proxy.port: "5678"
+     npm.proxy.scheme: "http"
+
+volumes:
+  npm_data:
+  npm_letsencrypt:

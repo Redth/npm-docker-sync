@@ -1,0 +1,291 @@
+# NPM Docker Sync
+
+A C# tool that monitors Docker containers and automatically synchronizes proxy configurations to Nginx Proxy Manager based on container labels.
+
+## Features
+
+- Monitors Docker events in real-time
+- Automatically creates/updates/removes proxy hosts in Nginx Proxy Manager
+- Supports all NPM proxy host configuration options via labels
+- Runs as a containerized service
+- Initial scan of existing containers on startup
+- Tracks automation-managed proxies via metadata (won't interfere with manually created proxies)
+- **High Availability Mirror Sync**: Automatically synchronizes primary NPM to secondary instances for redundancy
+
+## Configuration
+
+### Required Environment Variables
+
+- `DOCKER_HOST`: Docker socket path (default: `unix:///var/run/docker.sock`)
+- `NPM_URL`: Nginx Proxy Manager URL (e.g., `http://nginx-proxy-manager:81`)
+  - Automatically normalized (lowercase, trailing slashes removed, default ports omitted)
+  - Examples that are treated as identical: `https://npm.example.com/`, `HTTPS://npm.example.com`, `https://NPM.EXAMPLE.COM:443`
+- `NPM_EMAIL`: NPM admin email
+- `NPM_PASSWORD`: NPM admin password
+
+### Optional Environment Variables
+
+- `SYNC_INSTANCE_ID`: Unique identifier for this sync instance (for multi-host deployments)
+  - **Recommended for multi-host setups**: Set to a unique value per Docker host (e.g., `docker-host-1`, `prod-server-a`)
+  - If not set, automatically uses Docker daemon ID or Swarm node ID
+  - Multiple sync instances with different IDs can safely manage the same NPM instance
+- `NPM_CONTAINER_NAME`: Name or ID of the NPM container for network detection (enables automatic `npm.proxy.host` inference)
+- `DOCKER_HOST_IP`: Explicit Docker host IP address
+  - **Recommended**: Set to your host machine's LAN IP (e.g., `192.168.2.162`)
+  - Used when containers aren't on the same network as NPM
+  - If not set, will try `host.docker.internal` or Docker bridge gateway
+
+### NPM Mirror Sync (Optional - for High Availability)
+
+- `NPM_MIRROR{n}_URL`: URL for secondary NPM instance number `n` (e.g., `NPM_MIRROR1_URL=http://npm-mirror-1:81`)
+- `NPM_MIRROR{n}_EMAIL`: Email for mirror `n` (falls back to `NPM_MIRROR_EMAIL`, then `NPM_EMAIL`)
+- `NPM_MIRROR{n}_PASSWORD`: Password for mirror `n` (falls back to `NPM_MIRROR_PASSWORD`, then `NPM_PASSWORD`)
+- `NPM_MIRROR{n}_SYNC_INTERVAL`: Optional sync interval (minutes) for mirror `n`
+- `NPM_MIRROR_SYNC_INTERVAL`: Global sync interval fallback (minutes) used when per-mirror interval is not specified (default: `5`)
+- `NPM_MIRROR_EMAIL`: Global email fallback for all mirrors
+- `NPM_MIRROR_PASSWORD`: Global password fallback for all mirrors
+- Legacy fallback (still supported): `NPM_MIRROR_URLS` with optional `NPM_MIRROR_{HOST}_EMAIL` and `NPM_MIRROR_{HOST}_PASSWORD`
+
+**What Gets Synced:**
+- ✅ Proxy Hosts
+- ✅ Redirection Hosts
+- ✅ Streams (TCP/UDP)
+- ✅ Dead Hosts (404 pages)
+- ✅ Access Lists
+- ⚠️ SSL Certificates (matched by name/domain, not auto-created)
+
+**Smart Sync Features:**
+- SHA256 hashing prevents unnecessary updates
+- ID mapping handles different IDs between instances
+- Triggered automatically on Docker label changes
+- Periodic sync on configurable interval
+- Metadata tagging (`mirrored_from`, `mirrored_at`)
+
+## Docker Labels
+
+Add labels to your containers to configure proxy hosts. Supports both `npm.` and `npm-` prefixes.
+
+### Required Labels
+
+- `npm.proxy.domains`: Comma-separated list of domain names (e.g., `app.example.com,www.app.example.com`) (NOTE: `npm.proxy.domain` works too).
+- `npm.proxy.port`: Target port (e.g., `8080`)
+
+### Optional Labels (Configuration)
+
+- `npm.proxy.host`: Target host to forward to (e.g., `myapp` or `192.168.1.100`)
+  - **Auto-detected if omitted**: Uses container name if on same network as NPM, otherwise uses Docker host IP
+- `npm.proxy.scheme`: Forward scheme (`http` or `https`, default: `http`)
+- `npm.proxy.ssl.force`: Force SSL redirect (`true`/`false`, default: `false`)
+- `npm.proxy.ssl.certificate.id`: SSL certificate ID from NPM
+- `npm.proxy.caching`: Enable caching (`true`/`false`, default: `false`)
+- `npm.proxy.block_common_exploits`: Block common exploits (`true`/`false`, default: `true`)
+- `npm.proxy.websockets`: Allow WebSocket upgrades (`true`/`false`, default: `false`)
+- `npm.proxy.ssl.http2`: Enable HTTP/2 (`true`/`false`, default: `false`)
+- `npm.proxy.ssl.hsts`: Enable HSTS (`true`/`false`, default: `false`)
+- `npm.proxy.ssl.hsts.subdomains`: Enable HSTS for subdomains (`true`/`false`, default: `false`)
+- `npm.proxy.accesslist.id`: Access list ID from NPM
+- `npm.proxy.advanced.config`: Advanced Nginx configuration
+
+> Labels can use either the `npm.` or `npm-` prefix (e.g., `npm.proxy.scheme` or `npm-proxy.scheme`).
+
+## Automatic Network Detection
+
+When `NPM_CONTAINER_NAME` is configured, the service automatically detects:
+
+1. **Shared Network Scenario**: If your container is on the same Docker network as NPM
+   - Forward host is set to the container name (Docker DNS handles routing)
+   - Example: Container `myapp` → `npm.proxy.host: myapp`
+
+2. **External Network Scenario**: If your container is NOT on the same network as NPM
+   - Forward host is set to the Docker host IP address
+   - Docker host IP is detected from the bridge network gateway or uses `host.docker.internal`
+   - Example: Container on different network → `npm.proxy.host: 172.17.0.1`
+
+3. **Manual Override**: You can always explicitly set `npm.proxy.host` to override auto-detection
+
+## Automatic SSL Certificate Selection
+
+When `npm.proxy.ssl.force` is set to `true` but no `npm.proxy.ssl.certificate.id` is specified, the service automatically searches for a matching SSL certificate:
+
+**Matching Strategy** (in order of preference):
+1. **Exact Match**: Certificate that covers all specified domain names
+2. **Primary Domain Match**: Certificate that covers at least the primary (first) domain
+3. **Wildcard Match**: Certificate with wildcard (e.g., `*.example.com`) that covers the domain
+
+**Example Scenarios**:
+- Domain `app.example.com` matches certificate for `*.example.com`
+- Domains `app.example.com, api.example.com` matches certificate for `*.example.com`
+- Domain `blog.example.com` matches exact certificate for `blog.example.com`
+
+**Benefits**:
+- No need to manually look up certificate IDs
+- Automatically uses the best matching certificate
+- Works with Let's Encrypt and custom certificates
+- Certificate list is cached (5 minutes) for performance
+
+**Manual Override**: Specify `npm.certificate_id` to use a specific certificate
+
+## Example Usage
+
+### Docker Compose (Shared Network)
+
+With automatic network detection enabled:
+
+```yaml
+networks:
+  proxy:
+    external: true  # Assuming NPM is on this network
+
+services:
+  npm-docker-sync:
+    build: .
+    container_name: npm-docker-sync
+    environment:
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - NPM_URL=http://nginx-proxy-manager:81
+      - NPM_EMAIL=admin@example.com
+      - NPM_PASSWORD=changeme
+      - NPM_CONTAINER_NAME=nginx-proxy-manager  # Enable auto-detection
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - proxy
+    restart: unless-stopped
+
+  # Example: Container on same network as NPM (npm.proxy.host auto-detected)
+  myapp:
+    image: nginx:alpine
+    container_name: myapp
+    networks:
+      - proxy
+    labels:
+      npm.proxy.domains: "app.example.com"
+      npm.proxy.port: "80"
+      # npm.proxy.host is auto-detected as "myapp"
+      npm.proxy.ssl.force: "true"
+      npm.proxy.ssl.certificate.id: "1"
+      npm.proxy.scheme: "http"
+
+  # Example: Container on different network (uses Docker host IP)
+  otherapp:
+    image: nginx:alpine
+    container_name: otherapp
+    # Not on the proxy network
+    labels:
+      npm.domains: "other.example.com"
+      npm.proxy.port: "80"
+      # npm.proxy.host is auto-detected as Docker host IP (e.g., 172.17.0.1)
+
+  # Example: Manual override of npm.proxy.host
+  customapp:
+    image: nginx:alpine
+    container_name: customapp
+    networks:
+      - proxy
+    labels:
+      npm.proxy.domain: "custom.example.com"
+      npm.proxy.host: "192.168.1.50"  # Explicitly specified
+      npm.proxy.port: "8080"
+      npm.proxy.scheme: "https"
+```
+
+### Docker Run
+
+```bash
+docker run -d \
+  --name npm-docker-sync \
+  -e DOCKER_HOST=unix:///var/run/docker.sock \
+  -e NPM_URL=http://nginx-proxy-manager:81 \
+  -e NPM_EMAIL=admin@example.com \
+  -e NPM_PASSWORD=changeme \
+  -v /var/run/docker.sock:/var/run/docker.sock:ro \
+  npm-docker-sync
+```
+
+## Building
+
+```bash
+docker build -t npm-docker-sync .
+```
+
+## Development
+
+```bash
+dotnet restore
+dotnet build
+dotnet run
+```
+
+## How It Works
+
+1. On startup, the service performs an initial scan of all existing containers
+2. It monitors Docker events for container start, stop, update, and destroy events
+3. When a container with `npm.*` or `npm-*` labels is detected:
+   - The labels are parsed into a proxy configuration
+   - A label hash is computed to detect changes
+   - A proxy host is created or updated in Nginx Proxy Manager
+   - Metadata is added to track automation-managed proxies:
+     - `managed_by`: Set to "npm-docker-sync"
+     - `npm_instance`: The NPM URL this instance manages
+     - `container_id`: The Docker container ID
+     - `created_at`: ISO 8601 timestamp
+   - The mapping between container and proxy host is tracked
+4. When labels are changed (without restarting):
+   - The service detects the change via label hash comparison
+   - The proxy host is updated with new configuration
+   - If labels are removed, the proxy host is deleted
+5. When a container stops or is removed:
+   - The associated proxy host is deleted from Nginx Proxy Manager
+
+### Label Change Detection
+
+The service intelligently handles label changes without requiring container restarts:
+
+- **Label changes detected**: When you update `npm.*` labels on a running container, the proxy host is automatically updated
+- **Labels removed**: If you remove all `npm.*` labels from a tracked container, the proxy host is automatically deleted
+- **No changes**: If labels haven't changed, updates are skipped to avoid unnecessary NPM API calls
+- **Hash-based tracking**: Uses SHA256 hashing of sorted label key-value pairs to detect changes efficiently
+
+## Automation Tracking & Multi-Instance Support
+
+All proxy hosts created by this tool include metadata in the `meta` field:
+
+- **`managed_by`**: Always set to `"npm-docker-sync"` to identify automation-created proxies
+- **`sync_instance_id`**: Unique identifier for the sync instance that created this proxy
+- **`npm_url`**: The NPM URL being managed (e.g., `https://npm.example.com`)
+- **`container_id`**: The Docker container ID that triggered the proxy creation
+- **`created_at`**: ISO 8601 timestamp of when the proxy was created
+
+### Multi-Instance Safety
+
+When multiple sync instances manage the **same NPM instance**, they will:
+- Only modify proxy hosts they created (matched by `sync_instance_id`)
+- Skip proxy hosts created by other sync instances
+- Log warnings when encountering proxies from other instances
+- Safely coexist without conflicts
+
+**Example scenario**: You have two Docker hosts syncing to one NPM instance
+- Host A with `SYNC_INSTANCE_ID=docker-host-a` manages containers on host A
+- Host B with `SYNC_INSTANCE_ID=docker-host-b` manages containers on host B
+- Each only touches proxies with matching `sync_instance_id` metadata
+- Both can proxy to the same NPM instance at `https://npm.example.com`
+- Manual proxies and other automation tools are also safe
+
+**Auto-Detection**: If `SYNC_INSTANCE_ID` is not set, the tool automatically uses:
+1. Docker Swarm Node ID (if running in swarm mode)
+2. Docker daemon ID (default for standalone Docker)
+3. Hostname (fallback with warning)
+
+**Best Practice**: Set `SYNC_INSTANCE_ID` explicitly in multi-host setups to ensure consistent identification across container restarts.
+
+You can check if a proxy is automation-managed using the helper methods:
+```csharp
+var isManaged = NginxProxyManagerClient.IsAutomationManaged(proxyHost, syncInstanceId);
+var containerId = NginxProxyManagerClient.GetManagedContainerId(proxyHost);
+var instanceId = NginxProxyManagerClient.GetManagedInstanceId(proxyHost);
+var npmUrl = NginxProxyManagerClient.GetManagedNpmUrl(proxyHost);
+```
+
+## License
+
+MIT
