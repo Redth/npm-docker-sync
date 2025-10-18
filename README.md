@@ -1,8 +1,8 @@
 # Nginx-Proxy-Manager Docker Sync
 
-A C# tool that monitors Docker containers and automatically synchronizes proxy configurations to [Nginx Proxy Manager](https://nginxproxymanager.com) based on container labels.
+Monitor 🐳 Docker containers and automatically synchronize proxy configurations specified as docker labels to [Nginx Proxy Manager](https://nginxproxymanager.com) (inspired by [lucaslorentz/caddy-docker-proxy](https://github.com/lucaslorentz/caddy-docker-proxy).
 
-Bonus: 1:n propagation/mirroring of settings for keeping multiple instances of Nginx-Proxy-Manager synchronized
+🎁 Bonus: 1:n mirroring of hosts and access lists for keeping multiple instances of Nginx-Proxy-Manager synchronized (inspired by [jeffersonraimon/npm-sync](https://github.com/jeffersonraimon/npm-sync)).
 
 ## Features
 
@@ -15,6 +15,7 @@ Bonus: 1:n propagation/mirroring of settings for keeping multiple instances of N
 - Automatic network detection and SSL certificate selection
 - Multi-instance support for managing the same NPM from multiple Docker hosts
 - Bonus: High Availability Mirror Sync (optional feature to synchronize primary NPM to secondary instances)
+
 
 ## Configuration
 
