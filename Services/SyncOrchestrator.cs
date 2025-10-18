@@ -160,34 +160,45 @@ public class SyncOrchestrator
 
     private async Task CreateOrUpdateProxyHost(string containerId, ProxyConfiguration config, CancellationToken cancellationToken)
     {
-        // Check if a proxy host already exists for the primary domain
-        var primaryDomain = config.DomainNames.FirstOrDefault();
-        if (primaryDomain == null)
+        // Check if a proxy host already exists for ANY of the specified domains
+        if (config.DomainNames == null || config.DomainNames.Count == 0)
         {
             _logger.LogWarning("No domain names configured for container {ContainerId}", containerId);
             return;
         }
 
-        var existingHost = await _npmClient.GetProxyHostByDomainAsync(primaryDomain, cancellationToken);
+        // Check for any existing proxy host with overlapping domains
+        var existingHost = await _npmClient.GetProxyHostByDomainsAsync(config.DomainNames, cancellationToken);
 
         if (existingHost != null)
         {
+            _logger.LogDebug("Found existing proxy host {HostId} for domains [{Domains}]", 
+                existingHost.Id, string.Join(", ", config.DomainNames));
+            
             // Check if the existing host is managed by THIS instance
             if (!NginxProxyManagerClient.IsAutomationManaged(existingHost, _instanceId!))
             {
-                _logger.LogWarning("Found existing proxy host {HostId} for domain {Domain} but it's not managed by this instance (ID: {InstanceId}). Skipping.",
-                    existingHost.Id, primaryDomain, _instanceId);
+                _logger.LogError("⚠️  CONFLICT: Found existing proxy host {HostId} with domains [{ExistingDomains}] that overlaps with requested domains [{RequestedDomains}]",
+                    existingHost.Id, 
+                    string.Join(", ", existingHost.DomainNames ?? new List<string>()),
+                    string.Join(", ", config.DomainNames));
+                
+                _logger.LogError("⚠️  This proxy is NOT managed by this automation instance (ID: {InstanceId})", _instanceId);
 
                 var otherInstance = NginxProxyManagerClient.GetManagedInstanceId(existingHost);
                 if (otherInstance != null)
                 {
-                    _logger.LogWarning("Existing proxy is managed by: {OtherInstance}", otherInstance);
+                    _logger.LogError("⚠️  Existing proxy is managed by instance: {OtherInstance}", otherInstance);
+                }
+                else
+                {
+                    _logger.LogError("⚠️  Existing proxy appears to be manually created (no automation metadata).");
+                    _logger.LogError("⚠️  To resolve: Delete the proxy in NPM UI, or remove npm.* labels from container {ContainerId}", containerId);
                 }
                 return;
             }
 
-            _logger.LogInformation("Found existing proxy host {HostId} for domain {Domain}. Updating...",
-                existingHost.Id, primaryDomain);
+            _logger.LogInformation("Found existing automation-managed proxy host {HostId}. Updating...", existingHost.Id);
 
             var request = _labelParser.ToProxyHostRequest(config, containerId, _instanceId!, _npmUrl);
             await _npmClient.UpdateProxyHostAsync(existingHost.Id, request, cancellationToken);
@@ -196,16 +207,27 @@ public class SyncOrchestrator
         }
         else
         {
-            _logger.LogInformation("Creating new proxy host for domains: {Domains}",
+            _logger.LogInformation("No existing proxy host found. Creating new proxy host for domains: [{Domains}]",
                 string.Join(", ", config.DomainNames));
 
-            var request = _labelParser.ToProxyHostRequest(config, containerId, _instanceId!, _npmUrl);
-            var newHost = await _npmClient.CreateProxyHostAsync(request, cancellationToken);
+            try
+            {
+                var request = _labelParser.ToProxyHostRequest(config, containerId, _instanceId!, _npmUrl);
+                var newHost = await _npmClient.CreateProxyHostAsync(request, cancellationToken);
 
-            _containerToProxyHostMap.AddOrUpdate(containerId, newHost.Id, (_, _) => newHost.Id);
+                _containerToProxyHostMap.AddOrUpdate(containerId, newHost.Id, (_, _) => newHost.Id);
 
-            _logger.LogInformation("Created proxy host {HostId} for container {ContainerId}",
-                newHost.Id, containerId);
+                _logger.LogInformation("✅ Created proxy host {HostId} for container {ContainerId}",
+                    newHost.Id, containerId);
+            }
+            catch (HttpRequestException ex) when (ex.Message.Contains("already in use") || ex.StatusCode == System.Net.HttpStatusCode.BadRequest)
+            {
+                _logger.LogError("❌ Failed to create proxy host: One or more domains [{Domains}] are already in use in NPM",
+                    string.Join(", ", config.DomainNames));
+                _logger.LogError("❌ This likely means a manually created proxy exists but wasn't detected. Check NPM UI for existing proxies with these domains.");
+                _logger.LogError("❌ NPM API Error: {ErrorMessage}", ex.Message);
+                throw;
+            }
         }
     }
 

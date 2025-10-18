@@ -77,7 +77,45 @@ public class NginxProxyManagerClient
     public async Task<ProxyHost?> GetProxyHostByDomainAsync(string domain, CancellationToken cancellationToken)
     {
         var hosts = await GetProxyHostsAsync(cancellationToken);
-        return hosts.FirstOrDefault(h => h.DomainNames?.Contains(domain) == true);
+        
+        // Try exact match first (case-insensitive)
+        var exactMatch = hosts.FirstOrDefault(h => 
+            h.DomainNames?.Any(d => string.Equals(d, domain, StringComparison.OrdinalIgnoreCase)) == true);
+        
+        if (exactMatch != null)
+        {
+            _logger.LogDebug("Found exact match for domain {Domain} in proxy host {HostId}", domain, exactMatch.Id);
+            return exactMatch;
+        }
+        
+        _logger.LogDebug("No proxy host found for domain {Domain} (searched {Count} hosts)", domain, hosts.Count);
+        return null;
+    }
+    
+    public async Task<ProxyHost?> GetProxyHostByDomainsAsync(IEnumerable<string> domains, CancellationToken cancellationToken)
+    {
+        var hosts = await GetProxyHostsAsync(cancellationToken);
+        var domainList = domains.ToList();
+        
+        // Find any host that has ANY of the specified domains (case-insensitive)
+        var matchingHost = hosts.FirstOrDefault(h => 
+            h.DomainNames?.Any(hostDomain => 
+                domainList.Any(d => string.Equals(d, hostDomain, StringComparison.OrdinalIgnoreCase))) == true);
+        
+        if (matchingHost != null)
+        {
+            _logger.LogDebug("Found proxy host {HostId} with overlapping domains: host has [{HostDomains}], searching for [{SearchDomains}]",
+                matchingHost.Id, 
+                string.Join(", ", matchingHost.DomainNames ?? new List<string>()), 
+                string.Join(", ", domainList));
+        }
+        else
+        {
+            _logger.LogDebug("No proxy host found for any of the domains: [{Domains}] (searched {Count} hosts)", 
+                string.Join(", ", domainList), hosts.Count);
+        }
+        
+        return matchingHost;
     }
 
     public async Task<ProxyHost> CreateProxyHostAsync(ProxyHostRequest request, CancellationToken cancellationToken)

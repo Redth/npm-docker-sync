@@ -224,6 +224,26 @@ The service intelligently handles label changes without requiring container rest
 - **No changes**: If labels haven't changed, updates are skipped to avoid unnecessary NPM API calls
 - **Hash-based tracking**: Uses SHA256 hashing of sorted label key-value pairs to detect changes efficiently
 
+### Conflict with Manual Proxy Hosts
+
+**Important**: If a proxy host for the same domain(s) already exists in NPM and was **manually created** (not by this automation), the tool will:
+- Detect that the existing proxy is not managed by this automation instance (checks for automation metadata)
+- Skip creating/updating the proxy to avoid conflicts
+- Log detailed error messages with ⚠️ and ❌ indicators explaining the conflict
+- Provide instructions on how to resolve the conflict
+
+**Domain Conflict Detection**:
+- The tool performs **case-insensitive** domain matching
+- Checks if **any** of the container's domains overlap with existing proxy hosts
+- NPM does **not** allow duplicate domains - if creation fails, you'll see an error: "domain already in use"
+
+**Resolution Options**:
+1. Delete the manually created proxy in NPM UI, then restart the container
+2. Remove the `npm.*` labels from the container to let it be managed manually
+3. Check the logs for detailed conflict information and follow the suggested resolution steps
+
+**Best Practice**: Either let the automation manage all proxy hosts via labels, or manually manage them in NPM. Avoid mixing both approaches for the same domains.
+
 ## Automation Tracking & Multi-Instance Support
 
 All proxy hosts created by this tool include metadata in the `meta` field:
