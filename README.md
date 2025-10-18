@@ -1,16 +1,20 @@
-# NPM Docker Sync
+# Nginx-Proxy-Manager Docker Sync
 
-A C# tool that monitors Docker containers and automatically synchronizes proxy configurations to Nginx Proxy Manager based on container labels.
+A C# tool that monitors Docker containers and automatically synchronizes proxy configurations to [Nginx Proxy Manager](https://nginxproxymanager.com) based on container labels.
+
+Bonus: 1:n propagation/mirroring of settings for keeping multiple instances of Nginx-Proxy-Manager synchronized
 
 ## Features
 
 - Monitors Docker events in real-time
-- Automatically creates/updates/removes proxy hosts in Nginx Proxy Manager
+- Automatically creates/updates/removes proxy hosts in Nginx-Proxy-Manager
 - Supports all NPM proxy host configuration options via labels
 - Runs as a containerized service
 - Initial scan of existing containers on startup
 - Tracks automation-managed proxies via metadata (won't interfere with manually created proxies)
-- **High Availability Mirror Sync**: Automatically synchronizes primary NPM to secondary instances for redundancy
+- Automatic network detection and SSL certificate selection
+- Multi-instance support for managing the same NPM from multiple Docker hosts
+- Bonus: High Availability Mirror Sync (optional feature to synchronize primary NPM to secondary instances)
 
 ## Configuration
 
@@ -31,35 +35,9 @@ A C# tool that monitors Docker containers and automatically synchronizes proxy c
   - Multiple sync instances with different IDs can safely manage the same NPM instance
 - `NPM_CONTAINER_NAME`: Name or ID of the NPM container for network detection (enables automatic `npm.proxy.host` inference)
 - `DOCKER_HOST_IP`: Explicit Docker host IP address
-  - **Recommended**: Set to your host machine's LAN IP (e.g., `192.168.2.162`)
+  - **Recommended**: Set to your host machine's LAN IP (e.g., `192.168.1.100`)
   - Used when containers aren't on the same network as NPM
   - If not set, will try `host.docker.internal` or Docker bridge gateway
-
-### NPM Mirror Sync (Optional - for High Availability)
-
-- `NPM_MIRROR{n}_URL`: URL for secondary NPM instance number `n` (e.g., `NPM_MIRROR1_URL=http://npm-mirror-1:81`)
-- `NPM_MIRROR{n}_EMAIL`: Email for mirror `n` (falls back to `NPM_MIRROR_EMAIL`, then `NPM_EMAIL`)
-- `NPM_MIRROR{n}_PASSWORD`: Password for mirror `n` (falls back to `NPM_MIRROR_PASSWORD`, then `NPM_PASSWORD`)
-- `NPM_MIRROR{n}_SYNC_INTERVAL`: Optional sync interval (minutes) for mirror `n`
-- `NPM_MIRROR_SYNC_INTERVAL`: Global sync interval fallback (minutes) used when per-mirror interval is not specified (default: `5`)
-- `NPM_MIRROR_EMAIL`: Global email fallback for all mirrors
-- `NPM_MIRROR_PASSWORD`: Global password fallback for all mirrors
-- Legacy fallback (still supported): `NPM_MIRROR_URLS` with optional `NPM_MIRROR_{HOST}_EMAIL` and `NPM_MIRROR_{HOST}_PASSWORD`
-
-**What Gets Synced:**
-- ✅ Proxy Hosts
-- ✅ Redirection Hosts
-- ✅ Streams (TCP/UDP)
-- ✅ Dead Hosts (404 pages)
-- ✅ Access Lists
-- ⚠️ SSL Certificates (matched by name/domain, not auto-created)
-
-**Smart Sync Features:**
-- SHA256 hashing prevents unnecessary updates
-- ID mapping handles different IDs between instances
-- Triggered automatically on Docker label changes
-- Periodic sync on configurable interval
-- Metadata tagging (`mirrored_from`, `mirrored_at`)
 
 ## Docker Labels
 
@@ -284,6 +262,62 @@ var isManaged = NginxProxyManagerClient.IsAutomationManaged(proxyHost, syncInsta
 var containerId = NginxProxyManagerClient.GetManagedContainerId(proxyHost);
 var instanceId = NginxProxyManagerClient.GetManagedInstanceId(proxyHost);
 var npmUrl = NginxProxyManagerClient.GetManagedNpmUrl(proxyHost);
+```
+
+## NPM Mirror Sync (Optional High Availability Feature)
+
+The mirror sync feature allows you to automatically synchronize your primary NPM instance to one or more secondary instances for high availability and redundancy.
+
+### Mirror Sync Configuration
+
+Configure mirror sync using these optional environment variables:
+
+- `NPM_MIRROR{n}_URL`: URL for secondary NPM instance number `n` (e.g., `NPM_MIRROR1_URL=http://npm-mirror-1:81`)
+- `NPM_MIRROR{n}_EMAIL`: Email for mirror `n` (falls back to `NPM_MIRROR_EMAIL`, then `NPM_EMAIL`)
+- `NPM_MIRROR{n}_PASSWORD`: Password for mirror `n` (falls back to `NPM_MIRROR_PASSWORD`, then `NPM_PASSWORD`)
+- `NPM_MIRROR{n}_SYNC_INTERVAL`: Optional sync interval (minutes) for mirror `n`
+- `NPM_MIRROR_SYNC_INTERVAL`: Global sync interval fallback (minutes) used when per-mirror interval is not specified (default: `5`)
+- `NPM_MIRROR_EMAIL`: Global email fallback for all mirrors
+- `NPM_MIRROR_PASSWORD`: Global password fallback for all mirrors
+- Legacy fallback (still supported): `NPM_MIRROR_URLS` with optional `NPM_MIRROR{n}_EMAIL` and `NPM_MIRROR{n}_PASSWORD`
+
+### What Gets Synced
+
+- ✅ Proxy Hosts
+- ✅ Redirection Hosts
+- ✅ Streams (TCP/UDP)
+- ✅ Dead Hosts (404 pages)
+- ✅ Access Lists
+- ⚠️ SSL Certificates (matched by name/domain, not auto-created)
+
+### Smart Sync Features
+
+- SHA256 hashing prevents unnecessary updates
+- ID mapping handles different IDs between instances
+- Triggered automatically on Docker label changes
+- Periodic sync on configurable interval
+- Metadata tagging (`mirrored_from`, `mirrored_at`)
+
+### Mirror Sync Example
+
+```yaml
+services:
+  npm-docker-sync:
+    build: .
+    environment:
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - NPM_URL=http://nginx-proxy-manager:81
+      - NPM_EMAIL=admin@example.com
+      - NPM_PASSWORD=changeme
+      # Mirror sync configuration
+      - NPM_MIRROR1_URL=http://npm-mirror-1:81
+      - NPM_MIRROR2_URL=http://npm-mirror-2:81
+      - NPM_MIRROR_EMAIL=admin@example.com
+      - NPM_MIRROR_PASSWORD=changeme
+      - NPM_MIRROR_SYNC_INTERVAL=5
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
 ```
 
 ## License
