@@ -90,6 +90,9 @@ public class NpmResourceSyncer
         var secondaryLists = await _secondary.GetAsync<List<AccessList>>(
             "/api/nginx/access-lists", cancellationToken) ?? new List<AccessList>();
 
+        _logger.LogInformation("Found {PrimaryCount} access lists in primary, {SecondaryCount} in secondary",
+            primaryLists.Count, secondaryLists.Count);
+
         var synced = 0;
         var skipped = 0;
 
@@ -97,6 +100,8 @@ public class NpmResourceSyncer
         {
             try
             {
+                _logger.LogDebug("Processing access list: {Name} (ID: {Id})", list.Name, list.Id);
+                
                 var listHash = ComputeResourceHash(list);
                 var existing = secondaryLists.FirstOrDefault(l => l.Name == list.Name);
 
@@ -106,12 +111,14 @@ public class NpmResourceSyncer
                     if (existingHash == listHash)
                     {
                         _accessListIdMap[$"access-{list.Id}"] = existing.Id;
+                        _logger.LogDebug("Access list {Name} unchanged, skipping", list.Name);
                         skipped++;
                         continue;
                     }
 
                     // Update existing
-                    _logger.LogDebug("Updating access list: {Name}", list.Name);
+                    _logger.LogInformation("Updating access list: {Name} (Primary ID: {PrimaryId} -> Secondary ID: {SecondaryId})",
+                        list.Name, list.Id, existing.Id);
                     var updatePayload = CreateAccessListPayload(list);
                     await _secondary.PutAsync<AccessList>(
                         $"/api/nginx/access-lists/{existing.Id}", updatePayload, cancellationToken);
@@ -121,20 +128,32 @@ public class NpmResourceSyncer
                 else
                 {
                     // Create new
-                    _logger.LogDebug("Creating access list: {Name}", list.Name);
+                    _logger.LogInformation("Creating new access list: {Name} (Primary ID: {PrimaryId})",
+                        list.Name, list.Id);
                     var createPayload = CreateAccessListPayload(list);
+                    
+                    // Log the payload for debugging
+                    _logger.LogDebug("Access list payload: Name={Name}, Items={ItemCount}, SatisfyAny={SatisfyAny}, PassAuth={PassAuth}",
+                        list.Name, list.Items?.Count ?? 0, list.SatisfyAny, list.PassAuth);
+                    
                     var created = await _secondary.PostAsync<AccessList>(
                         "/api/nginx/access-lists", createPayload, cancellationToken);
                     if (created != null)
                     {
                         _accessListIdMap[$"access-{list.Id}"] = created.Id;
+                        _logger.LogInformation("Created access list {Name} with secondary ID: {SecondaryId}",
+                            list.Name, created.Id);
+                    }
+                    else
+                    {
+                        _logger.LogWarning("Failed to create access list {Name}: returned null", list.Name);
                     }
                     synced++;
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to sync access list: {Name}", list.Name);
+                _logger.LogError(ex, "Failed to sync access list: {Name} (ID: {Id})", list.Name, list.Id);
             }
         }
 
@@ -403,7 +422,7 @@ public class NpmResourceSyncer
         return new
         {
             name = list.Name,
-            items = list.Items,
+            items = list.Items ?? new List<AccessListItem>(),
             satisfy_any = list.SatisfyAny,
             pass_auth = list.PassAuth
         };

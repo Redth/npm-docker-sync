@@ -328,7 +328,14 @@ public class SecondaryNpmClient
     {
         await EnsureAuthenticatedAsync(cancellationToken);
         var response = await _httpClient.PostAsJsonAsync(path, body, cancellationToken);
-        response.EnsureSuccessStatusCode();
+        
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
+            throw new HttpRequestException(
+                $"Response status code does not indicate success: {(int)response.StatusCode} ({response.ReasonPhrase}). Body: {errorContent}");
+        }
+        
         return await response.Content.ReadFromJsonAsync<T>(cancellationToken);
     }
 
@@ -336,7 +343,14 @@ public class SecondaryNpmClient
     {
         await EnsureAuthenticatedAsync(cancellationToken);
         var response = await _httpClient.PutAsJsonAsync(path, body, cancellationToken);
-        response.EnsureSuccessStatusCode();
+        
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
+            throw new HttpRequestException(
+                $"Response status code does not indicate success: {(int)response.StatusCode} ({response.ReasonPhrase}). Body: {errorContent}");
+        }
+        
         return await response.Content.ReadFromJsonAsync<T>(cancellationToken);
     }
 
