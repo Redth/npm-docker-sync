@@ -126,14 +126,9 @@ When `npm.proxy.ssl.force` is set to `true` but no `npm.proxy.ssl.certificate.id
 With automatic network detection enabled:
 
 ```yaml
-networks:
-  proxy:
-    external: true  # Assuming NPM is on this network
-
 services:
   npm-docker-sync:
-    build: .
-    container_name: npm-docker-sync
+    image: ghcr.io/redth/npm-docker-sync:latest
     environment:
       - DOCKER_HOST=unix:///var/run/docker.sock
       - NPM_URL=http://nginx-proxy-manager:81
@@ -147,15 +142,22 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
-      - proxy
+      - npm
     restart: unless-stopped
+networks:
+  npm:
+    external: true  # Assuming NPM is on this network
+```
 
+### Example label usage:
+
+```
   # Example: Container on same network as NPM (npm.proxy.host auto-detected)
   myapp:
     image: nginx:alpine
     container_name: myapp
     networks:
-      - proxy
+      - npm
     labels:
       npm.proxy.domains: "app.example.com"
       npm.proxy.port: "80"
@@ -179,7 +181,7 @@ services:
     image: nginx:alpine
     container_name: customapp
     networks:
-      - proxy
+      - npm
     labels:
       npm.proxy.domain: "custom.example.com"
       npm.proxy.host: "192.168.1.50"  # Explicitly specified
@@ -197,21 +199,13 @@ docker run -d \
   -e NPM_EMAIL=admin@example.com \
   -e NPM_PASSWORD=changeme \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
-  npm-docker-sync
+  ghcr.io/redth/npm-docker-sync:latest
 ```
 
 ## Building
 
 ```bash
 docker build -t npm-docker-sync .
-```
-
-## Development
-
-```bash
-dotnet restore
-dotnet build
-dotnet run
 ```
 
 ## How It Works
@@ -360,6 +354,21 @@ services:
     restart: unless-stopped
 ```
 
-## License
 
-MIT
+## Development
+
+```bash
+dotnet restore
+dotnet build
+dotnet run
+```
+
+
+## License
+Copyright 2025 redth
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the “Software”), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
