@@ -2,12 +2,25 @@ using Docker.DotNet;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Console;
 using NpmDockerSync.Services;
 
 var builder = Host.CreateApplicationBuilder(args);
 
 // Add configuration
 builder.Configuration.AddEnvironmentVariables();
+
+// Configure logging with cleaner console output
+builder.Logging.ClearProviders();
+builder.Logging.AddConsoleFormatter<SimpleConsoleFormatter, CustomConsoleFormatterOptions>(options =>
+{
+    options.ColorBehavior = LoggerColorBehavior.Enabled;
+});
+builder.Logging.AddConsole(options =>
+{
+    options.FormatterName = "simple";
+});
 
 // Register Docker client
 builder.Services.AddSingleton(sp =>
@@ -27,9 +40,6 @@ builder.Services.AddSingleton<SyncOrchestrator>();
 builder.Services.AddSingleton<NpmMirrorSyncService>();
 builder.Services.AddHostedService<DockerMonitorService>();
 builder.Services.AddHostedService<NpmMirrorSyncService>();
-
-// Add logging
-builder.Services.AddLogging();
 
 var host = builder.Build();
 
