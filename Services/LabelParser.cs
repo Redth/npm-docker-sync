@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
 namespace NpmDockerSync.Services;
@@ -5,10 +6,12 @@ namespace NpmDockerSync.Services;
 public class LabelParser
 {
     private readonly ILogger<LabelParser> _logger;
+    private readonly IConfiguration _configuration;
 
-    public LabelParser(ILogger<LabelParser> logger)
+    public LabelParser(ILogger<LabelParser> logger, IConfiguration configuration)
     {
         _logger = logger;
+        _configuration = configuration;
     }
 
     public ProxyConfiguration? ParseLabels(IDictionary<string, string> labels)
@@ -50,13 +53,13 @@ public class LabelParser
             ForwardHost = forwardHost?.Trim() ?? string.Empty, // Can be empty, will be inferred later
             ForwardPort = forwardPort,
             ForwardScheme = GetLabelValue(labels, "proxy.scheme") ?? "http",
-            SslForced = GetBoolLabel(labels, "proxy.ssl.force", false),
-            CachingEnabled = GetBoolLabel(labels, "proxy.caching", false),
-            BlockExploits = GetBoolLabel(labels, "proxy.block_common_exploits", true),
-            AllowWebsocketUpgrade = GetBoolLabel(labels, "proxy.websockets", false),
-            Http2Support = GetBoolLabel(labels, "proxy.ssl.http2", false),
-            HstsEnabled = GetBoolLabel(labels, "proxy.ssl.hsts", false),
-            HstsSubdomains = GetBoolLabel(labels, "proxy.ssl.hsts.subdomains", false),
+            SslForced = GetBoolLabel(labels, "proxy.ssl.force", GetConfigBool("NPM_PROXY_SSL_FORCE", false)),
+            CachingEnabled = GetBoolLabel(labels, "proxy.caching", GetConfigBool("NPM_PROXY_CACHING", false)),
+            BlockExploits = GetBoolLabel(labels, "proxy.block_common_exploits", GetConfigBool("NPM_PROXY_BLOCK_EXPLOITS", true)),
+            AllowWebsocketUpgrade = GetBoolLabel(labels, "proxy.websockets", GetConfigBool("NPM_PROXY_WEBSOCKETS", false)),
+            Http2Support = GetBoolLabel(labels, "proxy.ssl.http2", GetConfigBool("NPM_PROXY_HTTP2", false)),
+            HstsEnabled = GetBoolLabel(labels, "proxy.ssl.hsts", GetConfigBool("NPM_PROXY_HSTS", false)),
+            HstsSubdomains = GetBoolLabel(labels, "proxy.ssl.hsts.subdomains", GetConfigBool("NPM_PROXY_HSTS_SUBDOMAINS", false)),
             AdvancedConfig = GetLabelValue(labels, "proxy.advanced.config") ?? string.Empty,
         };
 
@@ -96,6 +99,16 @@ public class LabelParser
         if (string.IsNullOrEmpty(value))
             return defaultValue;
 
+        return value.ToLowerInvariant() is "true" or "1" or "yes" or "on";
+    }
+
+    private bool GetConfigBool(string key, bool defaultValue)
+    {
+        var value = _configuration[key];
+        
+        if (string.IsNullOrEmpty(value))
+            return defaultValue;
+        
         return value.ToLowerInvariant() is "true" or "1" or "yes" or "on";
     }
 

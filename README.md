@@ -39,6 +39,20 @@ Bonus: 1:n propagation/mirroring of settings for keeping multiple instances of N
   - Used when containers aren't on the same network as NPM
   - If not set, will try `host.docker.internal` or Docker bridge gateway
 
+### Proxy Defaults (Optional)
+
+Set global default values for proxy configurations. These can be overridden per-container using labels.
+
+- `NPM_PROXY_SSL_FORCE`: Default for SSL redirect (`true`/`false`, default: `false`)
+- `NPM_PROXY_CACHING`: Default for caching (`true`/`false`, default: `false`)
+- `NPM_PROXY_BLOCK_EXPLOITS`: Default for blocking common exploits (`true`/`false`, default: `true`)
+- `NPM_PROXY_WEBSOCKETS`: Default for WebSocket upgrades (`true`/`false`, default: `false`)
+- `NPM_PROXY_HTTP2`: Default for HTTP/2 support (`true`/`false`, default: `false`)
+- `NPM_PROXY_HSTS`: Default for HSTS (`true`/`false`, default: `false`)
+- `NPM_PROXY_HSTS_SUBDOMAINS`: Default for HSTS subdomains (`true`/`false`, default: `false`)
+
+**Example**: Set `NPM_PROXY_SSL_FORCE=true` to force SSL for all containers by default, then use `npm.proxy.ssl.force=false` on specific containers to override.
+
 ## Docker Labels
 
 Add labels to your containers to configure proxy hosts. Supports both `npm.` and `npm-` prefixes.
@@ -53,18 +67,20 @@ Add labels to your containers to configure proxy hosts. Supports both `npm.` and
 - `npm.proxy.host`: Target host to forward to (e.g., `myapp` or `192.168.1.100`)
   - **Auto-detected if omitted**: Uses container name if on same network as NPM, otherwise uses Docker host IP
 - `npm.proxy.scheme`: Forward scheme (`http` or `https`, default: `http`)
-- `npm.proxy.ssl.force`: Force SSL redirect (`true`/`false`, default: `false`)
+- `npm.proxy.ssl.force`: Force SSL redirect (`true`/`false`, default: `false` or `NPM_PROXY_SSL_FORCE`)
 - `npm.proxy.ssl.certificate.id`: SSL certificate ID from NPM
-- `npm.proxy.caching`: Enable caching (`true`/`false`, default: `false`)
-- `npm.proxy.block_common_exploits`: Block common exploits (`true`/`false`, default: `true`)
-- `npm.proxy.websockets`: Allow WebSocket upgrades (`true`/`false`, default: `false`)
-- `npm.proxy.ssl.http2`: Enable HTTP/2 (`true`/`false`, default: `false`)
-- `npm.proxy.ssl.hsts`: Enable HSTS (`true`/`false`, default: `false`)
-- `npm.proxy.ssl.hsts.subdomains`: Enable HSTS for subdomains (`true`/`false`, default: `false`)
+- `npm.proxy.caching`: Enable caching (`true`/`false`, default: `false` or `NPM_PROXY_CACHING`)
+- `npm.proxy.block_common_exploits`: Block common exploits (`true`/`false`, default: `true` or `NPM_PROXY_BLOCK_EXPLOITS`)
+- `npm.proxy.websockets`: Allow WebSocket upgrades (`true`/`false`, default: `false` or `NPM_PROXY_WEBSOCKETS`)
+- `npm.proxy.ssl.http2`: Enable HTTP/2 (`true`/`false`, default: `false` or `NPM_PROXY_HTTP2`)
+- `npm.proxy.ssl.hsts`: Enable HSTS (`true`/`false`, default: `false` or `NPM_PROXY_HSTS`)
+- `npm.proxy.ssl.hsts.subdomains`: Enable HSTS for subdomains (`true`/`false`, default: `false` or `NPM_PROXY_HSTS_SUBDOMAINS`)
 - `npm.proxy.accesslist.id`: Access list ID from NPM
 - `npm.proxy.advanced.config`: Advanced Nginx configuration
 
 > Labels can use either the `npm.` or `npm-` prefix (e.g., `npm.proxy.scheme` or `npm-proxy.scheme`).
+> 
+> **Note**: Label values override environment variable defaults. If you set `NPM_PROXY_SSL_FORCE=true` globally, you can still use `npm.proxy.ssl.force=false` on specific containers to disable it.
 
 ## Automatic Network Detection
 
@@ -124,6 +140,10 @@ services:
       - NPM_EMAIL=admin@example.com
       - NPM_PASSWORD=changeme
       - NPM_CONTAINER_NAME=nginx-proxy-manager  # Enable auto-detection
+      # Optional: Set global defaults for all proxies
+      - NPM_PROXY_SSL_FORCE=true
+      - NPM_PROXY_BLOCK_EXPLOITS=true
+      - NPM_PROXY_WEBSOCKETS=false
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
