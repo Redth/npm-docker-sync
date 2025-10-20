@@ -111,27 +111,15 @@ public class SyncOrchestrator
             // Check if proxy host already exists for this container
             if (_containerToProxyHostMap.TryGetValue(containerId, out var existingHostId))
             {
-                // Check if domains changed - if so, delete and recreate instead of updating
-                // because NPM may not handle domain changes properly on existing proxies
-                var existingHost = await _npmClient.GetProxyHostByIdAsync(existingHostId, cancellationToken);
+                // NPM doesn't support updates - any change requires delete + recreate
+                _logger.LogInformation("Labels changed for container {ContainerId}. Deleting and recreating proxy host {HostId}.",
+                    containerId, existingHostId);
 
-                if (existingHost != null && DomainsChanged(existingHost.DomainNames, config.DomainNames))
-                {
-                    _logger.LogInformation("Domains changed for container {ContainerId} (old: [{OldDomains}], new: [{NewDomains}]). Deleting and recreating proxy host.",
-                        containerId,
-                        string.Join(", ", existingHost.DomainNames ?? new List<string>()),
-                        string.Join(", ", config.DomainNames ?? new List<string>()));
+                // Remove the old proxy host
+                await RemoveContainer(containerId, cancellationToken);
 
-                    // Remove the old proxy host
-                    await RemoveContainer(containerId, cancellationToken);
-
-                    // Create new proxy host with new domains
-                    await CreateOrUpdateProxyHost(containerId, config, cancellationToken);
-                }
-                else
-                {
-                    await UpdateExistingProxyHost(containerId, existingHostId, config, cancellationToken);
-                }
+                // Create new proxy host with updated configuration
+                await CreateOrUpdateProxyHost(containerId, config, cancellationToken);
             }
             else
             {
@@ -218,12 +206,18 @@ public class SyncOrchestrator
                 return;
             }
 
-            _logger.LogInformation("Found existing automation-managed proxy host {HostId}. Updating...", existingHost.Id);
+            _logger.LogInformation("Found existing automation-managed proxy host {HostId}. Deleting and recreating...", existingHost.Id);
 
+            // NPM doesn't support updates - delete the old one first
+            await _npmClient.DeleteProxyHostAsync(existingHost.Id, cancellationToken);
+
+            // Create new proxy host
             var request = _labelParser.ToProxyHostRequest(config, containerId, _instanceId!, _npmUrl);
-            await _npmClient.UpdateProxyHostAsync(existingHost.Id, request, cancellationToken);
+            var newHost = await _npmClient.CreateProxyHostAsync(request, cancellationToken);
 
-            _containerToProxyHostMap.AddOrUpdate(containerId, existingHost.Id, (_, _) => existingHost.Id);
+            _containerToProxyHostMap.AddOrUpdate(containerId, newHost.Id, (_, _) => newHost.Id);
+
+            _logger.LogInformation("✅ Recreated proxy host {HostId} for container {ContainerId}", newHost.Id, containerId);
         }
         else
         {
@@ -251,13 +245,6 @@ public class SyncOrchestrator
         }
     }
 
-    private async Task UpdateExistingProxyHost(string containerId, int hostId, ProxyConfiguration config, CancellationToken cancellationToken)
-    {
-        _logger.LogInformation("Updating existing proxy host {HostId}", hostId);
-
-        var request = _labelParser.ToProxyHostRequest(config, containerId, _instanceId!, _npmUrl);
-        await _npmClient.UpdateProxyHostAsync(hostId, request, cancellationToken);
-    }
 
     private async Task EnsureInstanceIdAsync(CancellationToken cancellationToken)
     {
@@ -283,13 +270,5 @@ public class SyncOrchestrator
         var combined = string.Join("|", npmLabels);
         return Convert.ToBase64String(System.Security.Cryptography.SHA256.HashData(
             System.Text.Encoding.UTF8.GetBytes(combined)));
-    }
-
-    private bool DomainsChanged(IEnumerable<string>? existingDomains, IEnumerable<string>? newDomains)
-    {
-        var existing = (existingDomains ?? Enumerable.Empty<string>()).OrderBy(d => d).ToList();
-        var updated = (newDomains ?? Enumerable.Empty<string>()).OrderBy(d => d).ToList();
-
-        return !existing.SequenceEqual(updated);
     }
 }
