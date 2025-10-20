@@ -7,11 +7,14 @@ Monitor 🐳 Docker containers and automatically synchronize proxy configuration
 ## Features
 
 - Monitors Docker events in real-time
-- Automatically creates/updates/removes proxy hosts in Nginx-Proxy-Manager
+- Automatically creates/updates/removes proxy hosts and streams in Nginx-Proxy-Manager
 - Supports all NPM proxy host configuration options via labels
+- **Stream hosts (TCP/UDP forwarding)** - Forward non-HTTP traffic like databases, game servers, custom protocols
+- **Multiple proxy hosts/streams per container** - Route different domains/ports on the same container
+- **Automatic port detection** - Infers port from container's EXPOSE or -p mappings when not specified
 - Runs as a containerized service
 - Initial scan of existing containers on startup
-- Tracks automation-managed proxies via metadata (won't interfere with manually created proxies)
+- Tracks automation-managed proxies/streams via metadata (won't interfere with manually created entries)
 - Automatic network detection and SSL certificate selection
 - Multi-instance support for managing the same NPM from multiple Docker hosts
 - Bonus: High Availability Mirror Sync (optional feature to synchronize primary NPM to secondary instances)
@@ -61,15 +64,18 @@ Add labels to your containers to configure proxy hosts. Supports both `npm.` and
 ### Required Labels
 
 - `npm.proxy.domains`: Comma-separated list of domain names (e.g., `app.example.com,www.app.example.com`) (NOTE: `npm.proxy.domain` works too).
-- `npm.proxy.port`: Target port (e.g., `8080`)
 
 ### Optional Labels (Configuration)
 
+- `npm.proxy.port`: Target port (e.g., `8080`)
+  - **Auto-detected if omitted**: Uses first exposed port from container's EXPOSE directive or -p port mappings
+  - If no port is specified and auto-detection fails, proxy creation will be skipped with an error
 - `npm.proxy.host`: Target host to forward to (e.g., `myapp` or `192.168.1.100`)
   - **Auto-detected if omitted**: Uses container name if on same network as NPM, otherwise uses Docker host IP
 - `npm.proxy.scheme`: Forward scheme (`http` or `https`, default: `http`)
 - `npm.proxy.ssl.force`: Force SSL redirect (`true`/`false`, default: `false` or `NPM_PROXY_SSL_FORCE`)
 - `npm.proxy.ssl.certificate.id`: SSL certificate ID from NPM
+  - **Auto-selected if omitted and SSL is forced**: Automatically finds matching certificate by domain name
 - `npm.proxy.caching`: Enable caching (`true`/`false`, default: `false` or `NPM_PROXY_CACHING`)
 - `npm.proxy.block_common_exploits`: Block common exploits (`true`/`false`, default: `true` or `NPM_PROXY_BLOCK_EXPLOITS`)
 - `npm.proxy.websockets`: Allow WebSocket upgrades (`true`/`false`, default: `false` or `NPM_PROXY_WEBSOCKETS`)
@@ -79,9 +85,90 @@ Add labels to your containers to configure proxy hosts. Supports both `npm.` and
 - `npm.proxy.accesslist.id`: Access list ID from NPM
 - `npm.proxy.advanced.config`: Advanced Nginx configuration
 
+### Multiple Proxy Hosts Per Container
+
+You can create multiple proxy hosts for a single container using numbered indices (0-99). This is useful when you want to route different domains to different ports on the same container.
+
+**Syntax**: Use `npm.proxy.N.*` where N is the index number.
+
+**Example - Route two domains to different ports:**
+```yaml
+labels:
+  npm.proxy.0.domains: api.example.com
+  npm.proxy.0.port: 8080
+
+  npm.proxy.1.domains: admin.example.com
+  npm.proxy.1.port: 9090
+  npm.proxy.1.ssl.force: true
+```
+
+**Backward compatibility**: Labels without an index (e.g., `npm.proxy.domains`) are treated as index 0.
+
+```yaml
+# These are equivalent:
+npm.proxy.domains: example.com       # Index 0 (implicit)
+npm.proxy.0.domains: example.com     # Index 0 (explicit)
+```
+
 > Labels can use either the `npm.` or `npm-` prefix (e.g., `npm.proxy.scheme` or `npm-proxy.scheme`).
-> 
+>
 > **Note**: Label values override environment variable defaults. If you set `NPM_PROXY_SSL_FORCE=true` globally, you can still use `npm.proxy.ssl.force=false` on specific containers to disable it.
+
+## Stream Hosts (TCP/UDP Forwarding)
+
+Stream hosts allow you to forward TCP and/or UDP traffic through NPM. Perfect for non-HTTP services like databases, game servers, or custom protocols.
+
+### Required Labels
+
+- `npm.stream.incoming.port`: The port NPM listens on for incoming connections
+
+### Optional Labels
+
+- `npm.stream.forward.port`: Target port to forward to
+  - **Auto-detected if omitted**: Uses first exposed port from container's EXPOSE directive or -p port mappings
+- `npm.stream.forward.host`: Target host to forward to
+  - **Auto-detected if omitted**: Uses container name if on same network as NPM, otherwise uses Docker host IP
+- `npm.stream.forward.tcp`: Enable TCP forwarding (`true`/`false`, default: `true`)
+- `npm.stream.forward.udp`: Enable UDP forwarding (`true`/`false`, default: `false`)
+- `npm.stream.ssl`: SSL certificate (can be certificate ID or domain name for auto-matching)
+  - If omitted: No SSL certificate (valid)
+  - If numeric: Uses that certificate ID
+  - If domain name: Auto-matches certificate (exact match, then wildcard), errors if no match found
+
+### Multiple Streams Per Container
+
+Like proxy hosts, you can create multiple streams per container using numbered indices:
+
+```yaml
+labels:
+  # Stream 0: MySQL on port 3306
+  npm.stream.0.incoming.port: 3306
+  npm.stream.0.forward.port: 3306
+
+  # Stream 1: Redis on port 6379
+  npm.stream.1.incoming.port: 6379
+  npm.stream.1.forward.port: 6379
+  npm.stream.1.forward.tcp: true
+```
+
+**Example - Game server with UDP:**
+```yaml
+labels:
+  npm.stream.incoming.port: 27015
+  npm.stream.forward.port: 27015
+  npm.stream.forward.tcp: true
+  npm.stream.forward.udp: true  # Enable both TCP and UDP
+```
+
+**Example - Secure database with SSL:**
+```yaml
+labels:
+  npm.stream.incoming.port: 5432
+  npm.stream.forward.port: 5432
+  npm.stream.ssl: db.example.com  # Auto-match certificate by domain
+```
+
+> **Note**: At least one of `npm.stream.forward.tcp` or `npm.stream.forward.udp` must be enabled. TCP is enabled by default.
 
 ## Automatic Network Detection
 
@@ -154,7 +241,7 @@ networks:
 
 ```yaml
 services:
-  # Example: Container on same network as NPM (npm.proxy.host auto-detected)
+  # Example 1: Simple setup with auto-detection
   myapp:
     image: nginx:alpine
     container_name: myapp
@@ -162,11 +249,27 @@ services:
       - npm
     labels:
       npm.proxy.domains: "app.example.com"
-      npm.proxy.port: "80"
-      # npm.proxy.host is auto-detected as "myapp"
+      # npm.proxy.port auto-detected from EXPOSE in nginx:alpine
+      # npm.proxy.host auto-detected as "myapp"
       npm.proxy.ssl.force: "true"
-      npm.proxy.ssl.certificate.id: "1"
-      npm.proxy.scheme: "http"
+      # npm.proxy.ssl.certificate.id auto-selected by domain match
+
+  # Example 2: Multiple proxies on one container
+  multiport-app:
+    image: myapp:latest
+    container_name: multiport-app
+    networks:
+      - npm
+    labels:
+      # Web UI on port 8080
+      npm.proxy.0.domains: "web.example.com"
+      npm.proxy.0.port: "8080"
+      npm.proxy.0.ssl.force: "true"
+
+      # API on port 9000
+      npm.proxy.1.domains: "api.example.com"
+      npm.proxy.1.port: "9000"
+      npm.proxy.1.websockets: "true"
 
   # Example: Container on different network (uses Docker host IP)
   otherapp:

@@ -185,5 +185,55 @@ public class DockerNetworkService
         }
     }
 
+    public async Task<int?> InferForwardPort(string containerId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var container = await _dockerClient.Containers.InspectContainerAsync(containerId, cancellationToken);
+            var containerName = container.Name.TrimStart('/');
+
+            // Get exposed ports from container config
+            if (container.Config?.ExposedPorts != null && container.Config.ExposedPorts.Count > 0)
+            {
+                // Parse the first exposed port (format: "80/tcp" or "443/tcp")
+                var firstPort = container.Config.ExposedPorts.Keys.FirstOrDefault();
+                if (firstPort != null)
+                {
+                    var portStr = firstPort.Split('/')[0];
+                    if (int.TryParse(portStr, out var port))
+                    {
+                        _logger.LogInformation("Container {ContainerName} auto-detected port: {Port} from exposed ports",
+                            containerName, port);
+                        return port;
+                    }
+                }
+            }
+
+            // Fallback: Check port bindings (for -p mappings)
+            if (container.NetworkSettings?.Ports != null && container.NetworkSettings.Ports.Count > 0)
+            {
+                var firstPortBinding = container.NetworkSettings.Ports.Keys.FirstOrDefault();
+                if (firstPortBinding != null)
+                {
+                    var portStr = firstPortBinding.Split('/')[0];
+                    if (int.TryParse(portStr, out var port))
+                    {
+                        _logger.LogInformation("Container {ContainerName} auto-detected port: {Port} from port bindings",
+                            containerName, port);
+                        return port;
+                    }
+                }
+            }
+
+            _logger.LogWarning("Container {ContainerName} has no exposed ports or port bindings", containerName);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error inferring forward port for container {ContainerId}", containerId);
+            return null;
+        }
+    }
+
     public string? GetDockerHostIp() => _detectedDockerHostIp;
 }
