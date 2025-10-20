@@ -111,7 +111,27 @@ public class SyncOrchestrator
             // Check if proxy host already exists for this container
             if (_containerToProxyHostMap.TryGetValue(containerId, out var existingHostId))
             {
-                await UpdateExistingProxyHost(containerId, existingHostId, config, cancellationToken);
+                // Check if domains changed - if so, delete and recreate instead of updating
+                // because NPM may not handle domain changes properly on existing proxies
+                var existingHost = await _npmClient.GetProxyHostByIdAsync(existingHostId, cancellationToken);
+
+                if (existingHost != null && DomainsChanged(existingHost.DomainNames, config.DomainNames))
+                {
+                    _logger.LogInformation("Domains changed for container {ContainerId} (old: [{OldDomains}], new: [{NewDomains}]). Deleting and recreating proxy host.",
+                        containerId,
+                        string.Join(", ", existingHost.DomainNames ?? new List<string>()),
+                        string.Join(", ", config.DomainNames ?? new List<string>()));
+
+                    // Remove the old proxy host
+                    await RemoveContainer(containerId, cancellationToken);
+
+                    // Create new proxy host with new domains
+                    await CreateOrUpdateProxyHost(containerId, config, cancellationToken);
+                }
+                else
+                {
+                    await UpdateExistingProxyHost(containerId, existingHostId, config, cancellationToken);
+                }
             }
             else
             {
@@ -263,5 +283,13 @@ public class SyncOrchestrator
         var combined = string.Join("|", npmLabels);
         return Convert.ToBase64String(System.Security.Cryptography.SHA256.HashData(
             System.Text.Encoding.UTF8.GetBytes(combined)));
+    }
+
+    private bool DomainsChanged(IEnumerable<string>? existingDomains, IEnumerable<string>? newDomains)
+    {
+        var existing = (existingDomains ?? Enumerable.Empty<string>()).OrderBy(d => d).ToList();
+        var updated = (newDomains ?? Enumerable.Empty<string>()).OrderBy(d => d).ToList();
+
+        return !existing.SequenceEqual(updated);
     }
 }

@@ -96,26 +96,45 @@ public class NginxProxyManagerClient
     {
         var hosts = await GetProxyHostsAsync(cancellationToken);
         var domainList = domains.ToList();
-        
+
         // Find any host that has ANY of the specified domains (case-insensitive)
-        var matchingHost = hosts.FirstOrDefault(h => 
-            h.DomainNames?.Any(hostDomain => 
+        var matchingHost = hosts.FirstOrDefault(h =>
+            h.DomainNames?.Any(hostDomain =>
                 domainList.Any(d => string.Equals(d, hostDomain, StringComparison.OrdinalIgnoreCase))) == true);
-        
+
         if (matchingHost != null)
         {
             _logger.LogDebug("Found proxy host {HostId} with overlapping domains: host has [{HostDomains}], searching for [{SearchDomains}]",
-                matchingHost.Id, 
-                string.Join(", ", matchingHost.DomainNames ?? new List<string>()), 
+                matchingHost.Id,
+                string.Join(", ", matchingHost.DomainNames ?? new List<string>()),
                 string.Join(", ", domainList));
         }
         else
         {
-            _logger.LogDebug("No proxy host found for any of the domains: [{Domains}] (searched {Count} hosts)", 
+            _logger.LogDebug("No proxy host found for any of the domains: [{Domains}] (searched {Count} hosts)",
                 string.Join(", ", domainList), hosts.Count);
         }
-        
+
         return matchingHost;
+    }
+
+    public async Task<ProxyHost?> GetProxyHostByIdAsync(int hostId, CancellationToken cancellationToken)
+    {
+        await EnsureAuthenticated(cancellationToken);
+
+        try
+        {
+            var response = await _httpClient.GetAsync($"/api/nginx/proxy-hosts/{hostId}", cancellationToken);
+            response.EnsureSuccessStatusCode();
+
+            var host = await response.Content.ReadFromJsonAsync<ProxyHost>(cancellationToken);
+            return host;
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            _logger.LogDebug("Proxy host {HostId} not found", hostId);
+            return null;
+        }
     }
 
     public async Task<ProxyHost> CreateProxyHostAsync(ProxyHostRequest request, CancellationToken cancellationToken)
