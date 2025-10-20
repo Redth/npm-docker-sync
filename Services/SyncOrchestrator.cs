@@ -51,6 +51,58 @@ public class SyncOrchestrator
         _logger.LogInformation("Using normalized NPM URL: {NpmUrl}", _npmUrl);
     }
 
+    public async Task RestoreStateFromNpm(CancellationToken cancellationToken)
+    {
+        await EnsureInstanceIdAsync(cancellationToken);
+
+        _logger.LogInformation("Restoring state from NPM for instance {InstanceId}...", _instanceId);
+
+        try
+        {
+            // Get all proxy hosts
+            var allProxies = await _npmClient.GetProxyHostsAsync(cancellationToken);
+            var managedProxies = allProxies.Where(p => NginxProxyManagerClient.IsAutomationManaged(p, _instanceId!)).ToList();
+
+            foreach (var proxy in managedProxies)
+            {
+                var containerId = NginxProxyManagerClient.GetManagedContainerId(proxy);
+                var proxyIndex = NginxProxyManagerClient.GetProxyIndex(proxy);
+
+                if (containerId != null && proxyIndex.HasValue)
+                {
+                    var proxyKey = $"{containerId}:{proxyIndex.Value}";
+                    _containerProxyMap.TryAdd(proxyKey, proxy.Id);
+                    _logger.LogDebug("Restored proxy mapping: {ProxyKey} -> NPM host {HostId}", proxyKey, proxy.Id);
+                }
+            }
+
+            // Get all streams
+            var allStreams = await _npmClient.GetStreamsAsync(cancellationToken);
+            var managedStreams = allStreams.Where(s => NginxProxyManagerClient.IsStreamAutomationManaged(s, _instanceId!)).ToList();
+
+            foreach (var stream in managedStreams)
+            {
+                var containerId = NginxProxyManagerClient.GetStreamContainerId(stream);
+                var streamIndex = NginxProxyManagerClient.GetStreamIndex(stream);
+
+                if (containerId != null && streamIndex.HasValue)
+                {
+                    var streamKey = $"{containerId}:{streamIndex.Value}";
+                    _containerStreamMap.TryAdd(streamKey, stream.Id);
+                    _logger.LogDebug("Restored stream mapping: {StreamKey} -> NPM stream {StreamId}", streamKey, stream.Id);
+                }
+            }
+
+            _logger.LogInformation("State restored: {ProxyCount} proxy(s), {StreamCount} stream(s)",
+                managedProxies.Count, managedStreams.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to restore state from NPM");
+            throw;
+        }
+    }
+
     public async Task ProcessContainer(string containerId, string containerName, IDictionary<string, string> labels, CancellationToken cancellationToken)
     {
         try
@@ -430,6 +482,16 @@ public class SyncOrchestrator
         {
             _logger.LogDebug("Found existing proxy host {HostId} for domains [{Domains}]",
                 existingHost.Id, string.Join(", ", config.DomainNames));
+
+            // Log metadata for debugging
+            if (existingHost.Meta != null)
+            {
+                var storedInstanceId = existingHost.Meta.TryGetValue("sync_instance_id", out var sid) ? sid?.ToString() : "none";
+                _logger.LogDebug("Existing proxy metadata: managed_by={ManagedBy}, sync_instance_id={StoredId}, current_instance_id={CurrentId}",
+                    existingHost.Meta.TryGetValue("managed_by", out var mb) ? mb?.ToString() : "none",
+                    storedInstanceId,
+                    _instanceId);
+            }
 
             // Check if the existing host is managed by THIS instance
             if (!NginxProxyManagerClient.IsAutomationManaged(existingHost, _instanceId!))

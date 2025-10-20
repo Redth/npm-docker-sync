@@ -261,6 +261,17 @@ public class NginxProxyManagerClient
             : null;
     }
 
+    public static int? GetProxyIndex(ProxyHost host)
+    {
+        if (host.Meta == null)
+            return null;
+
+        if (host.Meta.TryGetValue("proxy_index", out var index) && int.TryParse(index?.ToString(), out var indexInt))
+            return indexInt;
+
+        return null;
+    }
+
     public static string? GetManagedInstanceId(ProxyHost host)
     {
         if (host.Meta == null)
@@ -269,6 +280,48 @@ public class NginxProxyManagerClient
         return host.Meta.TryGetValue("sync_instance_id", out var instance)
             ? instance?.ToString()
             : null;
+    }
+
+    // Stream helper methods
+    public static bool IsStreamAutomationManaged(Stream stream, string syncInstanceId)
+    {
+        if (stream.Meta == null)
+            return false;
+
+        // Check if managed by npm-docker-sync
+        if (!stream.Meta.TryGetValue("managed_by", out var managedBy) ||
+            managedBy?.ToString() != "npm-docker-sync")
+            return false;
+
+        // Check if managed by THIS sync instance
+        if (stream.Meta.TryGetValue("sync_instance_id", out var instance))
+        {
+            return instance?.ToString() == syncInstanceId;
+        }
+
+        // Backward compatibility: if no sync_instance_id, assume it's ours
+        return true;
+    }
+
+    public static string? GetStreamContainerId(Stream stream)
+    {
+        if (stream.Meta == null)
+            return null;
+
+        return stream.Meta.TryGetValue("container_id", out var containerId)
+            ? containerId?.ToString()
+            : null;
+    }
+
+    public static int? GetStreamIndex(Stream stream)
+    {
+        if (stream.Meta == null)
+            return null;
+
+        if (stream.Meta.TryGetValue("stream_index", out var index) && int.TryParse(index?.ToString(), out var indexInt))
+            return indexInt;
+
+        return null;
     }
 
     public static string? GetManagedNpmUrl(ProxyHost host)

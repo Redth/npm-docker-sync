@@ -38,6 +38,9 @@ public class DockerMonitorService : BackgroundService
             // Initialize network detection
             await _networkService.InitializeAsync(stoppingToken);
 
+            // Restore state from NPM (maps container IDs to proxy/stream IDs)
+            await _syncOrchestrator.RestoreStateFromNpm(stoppingToken);
+
             // Perform initial scan of all containers
             await PerformInitialScan(stoppingToken);
 
