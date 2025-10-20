@@ -62,10 +62,11 @@ public class SimpleConsoleFormatter : ConsoleFormatter
 
         textWriter.Write(" ");
 
-        // Message
-        textWriter.WriteLine(message);
+        // Message (replace newlines with space to keep single line)
+        var singleLineMessage = message.Replace("\r\n", " ").Replace("\n", " ").Replace("\r", " ");
+        textWriter.WriteLine(singleLineMessage);
 
-        // Exception
+        // Exception (keep on separate lines for readability)
         if (logEntry.Exception != null)
         {
             textWriter.WriteLine(logEntry.Exception.ToString());

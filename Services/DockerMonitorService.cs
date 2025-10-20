@@ -63,9 +63,9 @@ public class DockerMonitorService : BackgroundService
         {
             if (container.Labels != null && HasProxyLabels(container.Labels))
             {
-                _logger.LogInformation("Found container with proxy labels: {ContainerName}",
-                    container.Names.FirstOrDefault());
-                await _syncOrchestrator.ProcessContainer(container.ID, container.Labels, stoppingToken);
+                var containerName = container.Names.FirstOrDefault()?.TrimStart('/') ?? container.ID;
+                _logger.LogInformation("Found container with proxy labels: {ContainerName}", containerName);
+                await _syncOrchestrator.ProcessContainer(container.ID, containerName, container.Labels, stoppingToken);
             }
         }
 
@@ -129,8 +129,9 @@ public class DockerMonitorService : BackgroundService
                     // - Updating proxy if labels changed
                     // - Deleting proxy if labels were removed
                     // - Skipping if nothing changed
-                    _logger.LogInformation("Container {Name} {Action}", container.Name, action);
-                    await _syncOrchestrator.ProcessContainer(containerId, container.Config.Labels, stoppingToken);
+                    var containerName = container.Name.TrimStart('/');
+                    _logger.LogInformation("Container {Name} {Action}", containerName, action);
+                    await _syncOrchestrator.ProcessContainer(containerId, containerName, container.Config.Labels, stoppingToken);
                 }
             }
             catch (Exception ex)
@@ -140,8 +141,14 @@ public class DockerMonitorService : BackgroundService
         }
         else if (action is "stop" or "die" or "destroy")
         {
-            _logger.LogInformation("Container stopped/removed: {ContainerId}", containerId);
-            await _syncOrchestrator.RemoveContainer(containerId, stoppingToken);
+            // Try to get the container name from the event actor attributes
+            var containerName = containerId;
+            if (message.Actor?.Attributes != null && message.Actor.Attributes.TryGetValue("name", out var name))
+            {
+                containerName = name;
+            }
+            _logger.LogInformation("Container stopped/removed: {ContainerName}", containerName);
+            await _syncOrchestrator.RemoveContainer(containerId, containerName, stoppingToken);
         }
     }
 

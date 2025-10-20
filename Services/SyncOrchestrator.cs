@@ -51,7 +51,7 @@ public class SyncOrchestrator
         _logger.LogInformation("Using normalized NPM URL: {NpmUrl}", _npmUrl);
     }
 
-    public async Task ProcessContainer(string containerId, IDictionary<string, string> labels, CancellationToken cancellationToken)
+    public async Task ProcessContainer(string containerId, string containerName, IDictionary<string, string> labels, CancellationToken cancellationToken)
     {
         try
         {
@@ -72,14 +72,14 @@ public class SyncOrchestrator
                 return;
             }
 
-            _logger.LogInformation("Processing container {ContainerId} with {ProxyCount} proxy(s) and {StreamCount} stream(s)",
-                containerId, proxyConfigs.Count, streamConfigs.Count);
+            _logger.LogInformation("Processing container {ContainerName} with {ProxyCount} proxy(s) and {StreamCount} stream(s)",
+                containerName, proxyConfigs.Count, streamConfigs.Count);
 
             // Process proxy hosts
-            await ProcessProxyHosts(containerId, proxyConfigs, cancellationToken);
+            await ProcessProxyHosts(containerId, containerName, proxyConfigs, cancellationToken);
 
             // Process streams
-            await ProcessStreams(containerId, streamConfigs, cancellationToken);
+            await ProcessStreams(containerId, containerName, streamConfigs, cancellationToken);
 
             // Update label hash after successful processing
             _containerLabelHashes.AddOrUpdate(containerId, currentLabelHash, (_, _) => currentLabelHash);
@@ -93,7 +93,7 @@ public class SyncOrchestrator
         }
     }
 
-    private async Task ProcessProxyHosts(string containerId, Dictionary<int, ProxyConfiguration> configs, CancellationToken cancellationToken)
+    private async Task ProcessProxyHosts(string containerId, string containerName, Dictionary<int, ProxyConfiguration> configs, CancellationToken cancellationToken)
     {
         // Get all existing proxy indices for this container
         var existingProxyKeys = _containerProxyMap.Keys
@@ -109,17 +109,17 @@ public class SyncOrchestrator
         // Remove proxies that no longer exist
         foreach (var index in existingIndices.Except(newIndices))
         {
-            await RemoveProxy(containerId, index, cancellationToken);
+            await RemoveProxy(containerId, containerName, index, cancellationToken);
         }
 
         // Process each proxy configuration
         foreach (var (index, config) in configs)
         {
-            await ProcessProxyConfig(containerId, index, config, cancellationToken);
+            await ProcessProxyConfig(containerId, containerName, index, config, cancellationToken);
         }
     }
 
-    private async Task ProcessStreams(string containerId, Dictionary<int, StreamConfiguration> configs, CancellationToken cancellationToken)
+    private async Task ProcessStreams(string containerId, string containerName, Dictionary<int, StreamConfiguration> configs, CancellationToken cancellationToken)
     {
         // Get all existing stream indices for this container
         var existingStreamKeys = _containerStreamMap.Keys
@@ -135,17 +135,17 @@ public class SyncOrchestrator
         // Remove streams that no longer exist
         foreach (var index in existingIndices.Except(newIndices))
         {
-            await RemoveStream(containerId, index, cancellationToken);
+            await RemoveStream(containerId, containerName, index, cancellationToken);
         }
 
         // Process each stream configuration
         foreach (var (index, config) in configs)
         {
-            await ProcessStreamConfig(containerId, index, config, cancellationToken);
+            await ProcessStreamConfig(containerId, containerName, index, config, cancellationToken);
         }
     }
 
-    private async Task ProcessProxyConfig(string containerId, int index, ProxyConfiguration config, CancellationToken cancellationToken)
+    private async Task ProcessProxyConfig(string containerId, string containerName, int index, ProxyConfiguration config, CancellationToken cancellationToken)
     {
         // Infer npm.proxy.host if not explicitly provided
         if (string.IsNullOrEmpty(config.ForwardHost))
@@ -163,8 +163,8 @@ public class SyncOrchestrator
             }
             else
             {
-                _logger.LogError("❌ Cannot create proxy for container {ContainerId} proxy {Index}: No port specified and unable to auto-detect port from container",
-                    containerId, index);
+                _logger.LogError("❌ Cannot create proxy for container {ContainerName} proxy {Index}: No port specified and unable to auto-detect port from container",
+                    containerName, index);
                 return; // Skip this proxy configuration
             }
         }
@@ -195,18 +195,18 @@ public class SyncOrchestrator
         if (_containerProxyMap.TryGetValue(proxyKey, out var existingHostId))
         {
             // NPM doesn't support updates - any change requires delete + recreate
-            _logger.LogInformation("Labels changed for container {ContainerId} proxy {Index}. Deleting and recreating proxy host {HostId}.",
-                containerId, index, existingHostId);
+            _logger.LogInformation("Labels changed for container {ContainerName} proxy {Index}. Deleting and recreating proxy host {HostId}.",
+                containerName, index, existingHostId);
 
             // Remove the old proxy host
-            await RemoveProxy(containerId, index, cancellationToken);
+            await RemoveProxy(containerId, containerName, index, cancellationToken);
         }
 
         // Create new proxy host
         await CreateOrUpdateProxyHost(containerId, index, config, cancellationToken);
     }
 
-    private async Task ProcessStreamConfig(string containerId, int index, StreamConfiguration config, CancellationToken cancellationToken)
+    private async Task ProcessStreamConfig(string containerId, string containerName, int index, StreamConfiguration config, CancellationToken cancellationToken)
     {
         // Infer npm.stream.forward.host if not explicitly provided
         if (string.IsNullOrEmpty(config.ForwardHost))
@@ -224,8 +224,8 @@ public class SyncOrchestrator
             }
             else
             {
-                _logger.LogError("❌ Cannot create stream for container {ContainerId} stream {Index}: No forward port specified and unable to auto-detect port from container",
-                    containerId, index);
+                _logger.LogError("❌ Cannot create stream for container {ContainerName} stream {Index}: No forward port specified and unable to auto-detect port from container",
+                    containerName, index);
                 return; // Skip this stream configuration
             }
         }
@@ -254,8 +254,8 @@ public class SyncOrchestrator
                 }
                 else
                 {
-                    _logger.LogError("❌ Cannot create stream for container {ContainerId} stream {Index}: SSL certificate specified ({Domain}) but no matching certificate found",
-                        containerId, index, config.SslCertificate);
+                    _logger.LogError("❌ Cannot create stream for container {ContainerName} stream {Index}: SSL certificate specified ({Domain}) but no matching certificate found",
+                        containerName, index, config.SslCertificate);
                     return; // Skip this stream configuration
                 }
             }
@@ -264,13 +264,13 @@ public class SyncOrchestrator
         // Validate at least one forwarding protocol is enabled
         if (!config.TcpForwarding && !config.UdpForwarding)
         {
-            _logger.LogError("❌ Cannot create stream for container {ContainerId} stream {Index}: At least one of TCP or UDP forwarding must be enabled",
-                containerId, index);
+            _logger.LogError("❌ Cannot create stream for container {ContainerName} stream {Index}: At least one of TCP or UDP forwarding must be enabled",
+                containerName, index);
             return;
         }
 
-        _logger.LogInformation("Processing container {ContainerId} stream {Index}: {IncomingPort} -> {ForwardHost}:{ForwardPort} (TCP:{Tcp}, UDP:{Udp}, SSL:{Ssl})",
-            containerId, index, config.IncomingPort, config.ForwardHost, config.ForwardPort,
+        _logger.LogInformation("Processing container {ContainerName} stream {Index}: {IncomingPort} -> {ForwardHost}:{ForwardPort} (TCP:{Tcp}, UDP:{Udp}, SSL:{Ssl})",
+            containerName, index, config.IncomingPort, config.ForwardHost, config.ForwardPort,
             config.TcpForwarding ? "yes" : "no",
             config.UdpForwarding ? "yes" : "no",
             config.CertificateId.HasValue ? config.CertificateId.Value.ToString() : "none");
@@ -281,18 +281,18 @@ public class SyncOrchestrator
         if (_containerStreamMap.TryGetValue(streamKey, out var existingStreamId))
         {
             // NPM doesn't support updates - any change requires delete + recreate
-            _logger.LogInformation("Labels changed for container {ContainerId} stream {Index}. Deleting and recreating stream {StreamId}.",
-                containerId, index, existingStreamId);
+            _logger.LogInformation("Labels changed for container {ContainerName} stream {Index}. Deleting and recreating stream {StreamId}.",
+                containerName, index, existingStreamId);
 
             // Remove the old stream
-            await RemoveStream(containerId, index, cancellationToken);
+            await RemoveStream(containerId, containerName, index, cancellationToken);
         }
 
         // Create new stream
-        await CreateStream(containerId, index, config, cancellationToken);
+        await CreateStream(containerId, containerName, index, config, cancellationToken);
     }
 
-    public async Task RemoveContainer(string containerId, CancellationToken cancellationToken)
+    public async Task RemoveContainer(string containerId, string containerName, CancellationToken cancellationToken)
     {
         try
         {
@@ -308,23 +308,23 @@ public class SyncOrchestrator
 
             if (proxyKeys.Count == 0 && streamKeys.Count == 0)
             {
-                _logger.LogDebug("No proxy or stream mappings found for container {ContainerId}", containerId);
+                _logger.LogDebug("No proxy or stream mappings found for container {ContainerName}", containerName);
                 return;
             }
 
-            _logger.LogInformation("Removing {ProxyCount} proxy(s) and {StreamCount} stream(s) for container {ContainerId}",
-                proxyKeys.Count, streamKeys.Count, containerId);
+            _logger.LogInformation("Removing {ProxyCount} proxy(s) and {StreamCount} stream(s) for container {ContainerName}",
+                proxyKeys.Count, streamKeys.Count, containerName);
 
             foreach (var proxyKey in proxyKeys)
             {
                 var index = int.Parse(proxyKey.Split(':')[1]);
-                await RemoveProxy(containerId, index, cancellationToken);
+                await RemoveProxy(containerId, containerName, index, cancellationToken);
             }
 
             foreach (var streamKey in streamKeys)
             {
                 var index = int.Parse(streamKey.Split(':')[1]);
-                await RemoveStream(containerId, index, cancellationToken);
+                await RemoveStream(containerId, containerName, index, cancellationToken);
             }
 
             // Remove label hash tracking
@@ -335,18 +335,18 @@ public class SyncOrchestrator
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error removing container {ContainerId}", containerId);
+            _logger.LogError(ex, "Error removing container {ContainerName}", containerName);
         }
     }
 
-    private async Task RemoveProxy(string containerId, int index, CancellationToken cancellationToken)
+    private async Task RemoveProxy(string containerId, string containerName, int index, CancellationToken cancellationToken)
     {
         var proxyKey = $"{containerId}:{index}";
 
         if (_containerProxyMap.TryRemove(proxyKey, out var proxyHostId))
         {
-            _logger.LogInformation("Removing proxy host {HostId} for container {ContainerId} proxy {Index}",
-                proxyHostId, containerId, index);
+            _logger.LogInformation("Removing proxy host {HostId} for container {ContainerName} proxy {Index}",
+                proxyHostId, containerName, index);
 
             try
             {
@@ -354,20 +354,20 @@ public class SyncOrchestrator
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error deleting proxy host {HostId} for container {ContainerId} proxy {Index}",
-                    proxyHostId, containerId, index);
+                _logger.LogError(ex, "Error deleting proxy host {HostId} for container {ContainerName} proxy {Index}",
+                    proxyHostId, containerName, index);
             }
         }
     }
 
-    private async Task RemoveStream(string containerId, int index, CancellationToken cancellationToken)
+    private async Task RemoveStream(string containerId, string containerName, int index, CancellationToken cancellationToken)
     {
         var streamKey = $"{containerId}:{index}";
 
         if (_containerStreamMap.TryRemove(streamKey, out var streamId))
         {
-            _logger.LogInformation("Removing stream {StreamId} for container {ContainerId} stream {Index}",
-                streamId, containerId, index);
+            _logger.LogInformation("Removing stream {StreamId} for container {ContainerName} stream {Index}",
+                streamId, containerName, index);
 
             try
             {
@@ -375,13 +375,13 @@ public class SyncOrchestrator
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error deleting stream {StreamId} for container {ContainerId} stream {Index}",
-                    streamId, containerId, index);
+                _logger.LogError(ex, "Error deleting stream {StreamId} for container {ContainerName} stream {Index}",
+                    streamId, containerName, index);
             }
         }
     }
 
-    private async Task CreateStream(string containerId, int index, StreamConfiguration config, CancellationToken cancellationToken)
+    private async Task CreateStream(string containerId, string containerName, int index, StreamConfiguration config, CancellationToken cancellationToken)
     {
         var streamKey = $"{containerId}:{index}";
 
@@ -392,12 +392,22 @@ public class SyncOrchestrator
 
             _containerStreamMap.AddOrUpdate(streamKey, stream.Id, (_, _) => stream.Id);
 
-            _logger.LogInformation("✅ Created stream {StreamId} for container {ContainerId} stream {Index}: {IncomingPort} -> {ForwardHost}:{ForwardPort}",
-                stream.Id, containerId, index, config.IncomingPort, config.ForwardHost, config.ForwardPort);
+            // Build protocol string
+            var protocols = new List<string>();
+            if (config.TcpForwarding) protocols.Add("tcp");
+            if (config.UdpForwarding) protocols.Add("udp");
+            var protocolStr = string.Join("+", protocols);
+
+            _logger.LogInformation("✅ Created stream {{id={StreamId}, incoming={IncomingPort}, forward={ForwardHost}:{ForwardPort}, protocol={Protocol}}}",
+                stream.Id,
+                config.IncomingPort,
+                config.ForwardHost,
+                config.ForwardPort,
+                protocolStr);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "❌ Failed to create stream for container {ContainerId} stream {Index}", containerId, index);
+            _logger.LogError(ex, "❌ Failed to create stream for container {ContainerName} stream {Index}", containerName, index);
             throw;
         }
     }
@@ -455,7 +465,23 @@ public class SyncOrchestrator
 
             _containerProxyMap.AddOrUpdate(proxyKey, newHost.Id, (_, _) => newHost.Id);
 
-            _logger.LogInformation("✅ Recreated proxy host {HostId} for container {ContainerId} proxy {Index}", newHost.Id, containerId, index);
+            // Build options string
+            var options = new List<string>();
+            if (config.SslForced) options.Add("ssl");
+            if (config.AllowWebsocketUpgrade) options.Add("websockets");
+            if (config.Http2Support) options.Add("http2");
+            if (config.HstsEnabled) options.Add("hsts");
+            if (config.CachingEnabled) options.Add("cache");
+            if (config.BlockExploits) options.Add("block_exploits");
+            var optionsStr = options.Count > 0 ? string.Join("+", options) : "none";
+
+            _logger.LogInformation("✅ Recreated proxy host {{id={HostId}, domains=[{Domains}], forward={Scheme}://{Host}:{Port}, options={Options}}}",
+                newHost.Id,
+                string.Join(",", config.DomainNames),
+                config.ForwardScheme,
+                config.ForwardHost,
+                config.ForwardPort,
+                optionsStr);
         }
         else
         {
@@ -469,8 +495,23 @@ public class SyncOrchestrator
 
                 _containerProxyMap.AddOrUpdate(proxyKey, newHost.Id, (_, _) => newHost.Id);
 
-                _logger.LogInformation("✅ Created proxy host {HostId} for container {ContainerId} proxy {Index}",
-                    newHost.Id, containerId, index);
+                // Build options string
+                var options = new List<string>();
+                if (config.SslForced) options.Add("ssl");
+                if (config.AllowWebsocketUpgrade) options.Add("websockets");
+                if (config.Http2Support) options.Add("http2");
+                if (config.HstsEnabled) options.Add("hsts");
+                if (config.CachingEnabled) options.Add("cache");
+                if (config.BlockExploits) options.Add("block_exploits");
+                var optionsStr = options.Count > 0 ? string.Join("+", options) : "none";
+
+                _logger.LogInformation("✅ Created proxy host {{id={HostId}, domains=[{Domains}], forward={Scheme}://{Host}:{Port}, options={Options}}}",
+                    newHost.Id,
+                    string.Join(",", config.DomainNames),
+                    config.ForwardScheme,
+                    config.ForwardHost,
+                    config.ForwardPort,
+                    optionsStr);
             }
             catch (HttpRequestException ex) when (ex.Message.Contains("already in use") || ex.StatusCode == System.Net.HttpStatusCode.BadRequest)
             {
