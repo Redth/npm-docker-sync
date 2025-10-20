@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Docker.DotNet;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -51,7 +52,7 @@ public class SyncOrchestrator
         _logger.LogInformation("Using normalized NPM URL: {NpmUrl}", _npmUrl);
     }
 
-    public async Task RestoreStateFromNpm(CancellationToken cancellationToken)
+    public async Task RestoreStateFromNpm(DockerClient dockerClient, CancellationToken cancellationToken)
     {
         await EnsureInstanceIdAsync(cancellationToken);
 
@@ -63,6 +64,9 @@ public class SyncOrchestrator
             var allProxies = await _npmClient.GetProxyHostsAsync(cancellationToken);
             var managedProxies = allProxies.Where(p => NginxProxyManagerClient.IsAutomationManaged(p, _instanceId!)).ToList();
 
+            // Track unique container IDs we need to fetch labels for
+            var containerIds = new HashSet<string>();
+
             foreach (var proxy in managedProxies)
             {
                 var containerId = NginxProxyManagerClient.GetManagedContainerId(proxy);
@@ -73,6 +77,7 @@ public class SyncOrchestrator
                     var proxyKey = $"{containerId}:{proxyIndex.Value}";
                     _containerProxyMap.TryAdd(proxyKey, proxy.Id);
                     _logger.LogDebug("Restored proxy mapping: {ProxyKey} -> NPM host {HostId}", proxyKey, proxy.Id);
+                    containerIds.Add(containerId);
                 }
             }
 
@@ -90,11 +95,36 @@ public class SyncOrchestrator
                     var streamKey = $"{containerId}:{streamIndex.Value}";
                     _containerStreamMap.TryAdd(streamKey, stream.Id);
                     _logger.LogDebug("Restored stream mapping: {StreamKey} -> NPM stream {StreamId}", streamKey, stream.Id);
+                    containerIds.Add(containerId);
                 }
             }
 
-            _logger.LogInformation("State restored: {ProxyCount} proxy(s), {StreamCount} stream(s)",
-                managedProxies.Count, managedStreams.Count);
+            // Restore label hashes for all managed containers
+            _logger.LogDebug("Restoring label hashes for {Count} containers", containerIds.Count);
+            foreach (var containerId in containerIds)
+            {
+                try
+                {
+                    var container = await dockerClient.Containers.InspectContainerAsync(containerId, cancellationToken);
+                    if (container?.Config?.Labels != null)
+                    {
+                        var labelHash = ComputeLabelHash(container.Config.Labels);
+                        _containerLabelHashes.TryAdd(containerId, labelHash);
+                        _logger.LogDebug("Restored label hash for container {ContainerId}", containerId);
+                    }
+                }
+                catch (Docker.DotNet.DockerContainerNotFoundException)
+                {
+                    _logger.LogWarning("Container {ContainerId} no longer exists, skipping label hash restoration", containerId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to restore label hash for container {ContainerId}", containerId);
+                }
+            }
+
+            _logger.LogInformation("State restored: {ProxyCount} proxy(s), {StreamCount} stream(s), {HashCount} label hash(es)",
+                managedProxies.Count, managedStreams.Count, _containerLabelHashes.Count);
         }
         catch (Exception ex)
         {
@@ -118,14 +148,29 @@ public class SyncOrchestrator
             var hasChanged = !_containerLabelHashes.TryGetValue(containerId, out var previousHash) ||
                              previousHash != currentLabelHash;
 
+            // If labels haven't changed AND we have existing mappings, skip processing
             if (!hasChanged)
             {
                 _logger.LogDebug("Labels unchanged for container {ContainerId}, skipping", containerId);
                 return;
             }
 
-            _logger.LogInformation("Processing container {ContainerName} with {ProxyCount} proxy(s) and {StreamCount} stream(s)",
-                containerName, proxyConfigs.Count, streamConfigs.Count);
+            // If we have a previous hash but it's different, log what changed
+            if (previousHash != null && previousHash != currentLabelHash)
+            {
+                _logger.LogInformation("Labels changed for container {ContainerName}, reprocessing", containerName);
+            }
+            else if (string.IsNullOrEmpty(currentLabelHash))
+            {
+                // No npm labels - this means labels were removed
+                _logger.LogInformation("No npm labels found for container {ContainerName}", containerName);
+            }
+            else
+            {
+                // First time seeing this container (no previous hash)
+                _logger.LogInformation("Processing container {ContainerName} with {ProxyCount} proxy(s) and {StreamCount} stream(s)",
+                    containerName, proxyConfigs.Count, streamConfigs.Count);
+            }
 
             // Process proxy hosts
             await ProcessProxyHosts(containerId, containerName, proxyConfigs, cancellationToken);
