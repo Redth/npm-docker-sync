@@ -174,6 +174,41 @@ public class NginxProxyManagerClient
         response.EnsureSuccessStatusCode();
     }
 
+    public async Task<List<Stream>> GetStreamsAsync(CancellationToken cancellationToken)
+    {
+        await EnsureAuthenticated(cancellationToken);
+
+        var response = await _httpClient.GetAsync("/api/nginx/streams", cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        var streams = await response.Content.ReadFromJsonAsync<List<Stream>>(cancellationToken);
+        return streams ?? new List<Stream>();
+    }
+
+    public async Task<Stream> CreateStreamAsync(StreamRequest request, CancellationToken cancellationToken)
+    {
+        await EnsureAuthenticated(cancellationToken);
+
+        _logger.LogInformation("Creating stream for incoming port: {IncomingPort} -> {ForwardHost}:{ForwardPort}",
+            request.IncomingPort, request.ForwardingHost, request.ForwardingPort);
+
+        var response = await _httpClient.PostAsJsonAsync("/api/nginx/streams", request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        var result = await response.Content.ReadFromJsonAsync<Stream>(cancellationToken);
+        return result ?? throw new Exception("Failed to create stream");
+    }
+
+    public async Task DeleteStreamAsync(int streamId, CancellationToken cancellationToken)
+    {
+        await EnsureAuthenticated(cancellationToken);
+
+        _logger.LogInformation("Deleting stream {StreamId}", streamId);
+
+        var response = await _httpClient.DeleteAsync($"/api/nginx/streams/{streamId}", cancellationToken);
+        response.EnsureSuccessStatusCode();
+    }
+
     public async Task<List<Certificate>> GetCertificatesAsync(CancellationToken cancellationToken)
     {
         await EnsureAuthenticated(cancellationToken);
@@ -513,9 +548,39 @@ public class Stream
     [JsonConverter(typeof(BoolToIntConverter))]
     public int UdpForwarding { get; set; }
 
+    [JsonPropertyName("certificate_id")]
+    public int? CertificateId { get; set; }
+
+    [JsonPropertyName("meta")]
+    public Dictionary<string, object>? Meta { get; set; }
+
     [JsonPropertyName("is_deleted")]
     [JsonConverter(typeof(BoolToIntConverter))]
     public int IsDeleted { get; set; }
+}
+
+public class StreamRequest
+{
+    [JsonPropertyName("incoming_port")]
+    public int IncomingPort { get; set; }
+
+    [JsonPropertyName("forwarding_host")]
+    public string ForwardingHost { get; set; } = string.Empty;
+
+    [JsonPropertyName("forwarding_port")]
+    public int ForwardingPort { get; set; }
+
+    [JsonPropertyName("tcp_forwarding")]
+    public int TcpForwarding { get; set; } = 1;
+
+    [JsonPropertyName("udp_forwarding")]
+    public int UdpForwarding { get; set; } = 0;
+
+    [JsonPropertyName("certificate_id")]
+    public int CertificateId { get; set; } = 0;
+
+    [JsonPropertyName("meta")]
+    public Dictionary<string, object> Meta { get; set; } = new();
 }
 
 public class DeadHost

@@ -18,7 +18,11 @@ public class SyncOrchestrator
     private string? _instanceId;
 
     // Track containers and their associated proxy host IDs and label state
-    private readonly ConcurrentDictionary<string, int> _containerToProxyHostMap = new();
+    // Key format: "containerId:proxyIndex" -> NPM proxy host ID
+    private readonly ConcurrentDictionary<string, int> _containerProxyMap = new();
+    // Key format: "containerId:streamIndex" -> NPM stream ID
+    private readonly ConcurrentDictionary<string, int> _containerStreamMap = new();
+    // Key format: "containerId" -> hash of all npm.* labels
     private readonly ConcurrentDictionary<string, string> _containerLabelHashes = new();
 
     public SyncOrchestrator(
@@ -54,23 +58,9 @@ public class SyncOrchestrator
             // Ensure we have an instance ID
             await EnsureInstanceIdAsync(cancellationToken);
 
-            var config = _labelParser.ParseLabels(labels);
+            var proxyConfigs = _labelParser.ParseLabels(labels);
+            var streamConfigs = _labelParser.ParseStreamLabels(labels);
             var currentLabelHash = ComputeLabelHash(labels);
-
-            // Check if labels were removed (container exists in tracking but no valid config)
-            if (config == null)
-            {
-                if (_containerToProxyHostMap.ContainsKey(containerId))
-                {
-                    _logger.LogInformation("Proxy labels removed from container {ContainerId}, deleting proxy host", containerId);
-                    await RemoveContainer(containerId, cancellationToken);
-                }
-                else
-                {
-                    _logger.LogDebug("No proxy labels found for container {ContainerId}", containerId);
-                }
-                return;
-            }
 
             // Check if labels have changed
             var hasChanged = !_containerLabelHashes.TryGetValue(containerId, out var previousHash) ||
@@ -82,49 +72,14 @@ public class SyncOrchestrator
                 return;
             }
 
-            // Infer npm.proxy.host if not explicitly provided
-            if (string.IsNullOrEmpty(config.ForwardHost))
-            {
-                config.ForwardHost = await _networkService.InferForwardHost(containerId, null, cancellationToken);
-            }
+            _logger.LogInformation("Processing container {ContainerId} with {ProxyCount} proxy(s) and {StreamCount} stream(s)",
+                containerId, proxyConfigs.Count, streamConfigs.Count);
 
-            // Auto-select certificate if SSL is forced but no certificate specified
-            if (config.SslForced && !config.CertificateId.HasValue)
-            {
-                var certId = await _certificateService.FindMatchingCertificateAsync(config.DomainNames, cancellationToken);
-                if (certId.HasValue)
-                {
-                    config.CertificateId = certId.Value;
-                    _logger.LogInformation("Auto-selected certificate ID {CertId} for domains: {Domains}",
-                        certId.Value, string.Join(", ", config.DomainNames));
-                }
-                else
-                {
-                    _logger.LogWarning("SSL forced but no matching certificate found for domains: {Domains}",
-                        string.Join(", ", config.DomainNames));
-                }
-            }
+            // Process proxy hosts
+            await ProcessProxyHosts(containerId, proxyConfigs, cancellationToken);
 
-            _logger.LogInformation("Processing container {ContainerId} with domains: {Domains}, host: {ForwardHost}, cert_id: {CertId}",
-                containerId, string.Join(", ", config.DomainNames), config.ForwardHost, config.CertificateId?.ToString() ?? "none");
-
-            // Check if proxy host already exists for this container
-            if (_containerToProxyHostMap.TryGetValue(containerId, out var existingHostId))
-            {
-                // NPM doesn't support updates - any change requires delete + recreate
-                _logger.LogInformation("Labels changed for container {ContainerId}. Deleting and recreating proxy host {HostId}.",
-                    containerId, existingHostId);
-
-                // Remove the old proxy host
-                await RemoveContainer(containerId, cancellationToken);
-
-                // Create new proxy host with updated configuration
-                await CreateOrUpdateProxyHost(containerId, config, cancellationToken);
-            }
-            else
-            {
-                await CreateOrUpdateProxyHost(containerId, config, cancellationToken);
-            }
+            // Process streams
+            await ProcessStreams(containerId, streamConfigs, cancellationToken);
 
             // Update label hash after successful processing
             _containerLabelHashes.AddOrUpdate(containerId, currentLabelHash, (_, _) => currentLabelHash);
@@ -138,27 +93,245 @@ public class SyncOrchestrator
         }
     }
 
+    private async Task ProcessProxyHosts(string containerId, Dictionary<int, ProxyConfiguration> configs, CancellationToken cancellationToken)
+    {
+        // Get all existing proxy indices for this container
+        var existingProxyKeys = _containerProxyMap.Keys
+            .Where(k => k.StartsWith($"{containerId}:"))
+            .ToList();
+
+        var existingIndices = existingProxyKeys
+            .Select(k => int.Parse(k.Split(':')[1]))
+            .ToHashSet();
+
+        var newIndices = configs.Keys.ToHashSet();
+
+        // Remove proxies that no longer exist
+        foreach (var index in existingIndices.Except(newIndices))
+        {
+            await RemoveProxy(containerId, index, cancellationToken);
+        }
+
+        // Process each proxy configuration
+        foreach (var (index, config) in configs)
+        {
+            await ProcessProxyConfig(containerId, index, config, cancellationToken);
+        }
+    }
+
+    private async Task ProcessStreams(string containerId, Dictionary<int, StreamConfiguration> configs, CancellationToken cancellationToken)
+    {
+        // Get all existing stream indices for this container
+        var existingStreamKeys = _containerStreamMap.Keys
+            .Where(k => k.StartsWith($"{containerId}:"))
+            .ToList();
+
+        var existingIndices = existingStreamKeys
+            .Select(k => int.Parse(k.Split(':')[1]))
+            .ToHashSet();
+
+        var newIndices = configs.Keys.ToHashSet();
+
+        // Remove streams that no longer exist
+        foreach (var index in existingIndices.Except(newIndices))
+        {
+            await RemoveStream(containerId, index, cancellationToken);
+        }
+
+        // Process each stream configuration
+        foreach (var (index, config) in configs)
+        {
+            await ProcessStreamConfig(containerId, index, config, cancellationToken);
+        }
+    }
+
+    private async Task ProcessProxyConfig(string containerId, int index, ProxyConfiguration config, CancellationToken cancellationToken)
+    {
+        // Infer npm.proxy.host if not explicitly provided
+        if (string.IsNullOrEmpty(config.ForwardHost))
+        {
+            config.ForwardHost = await _networkService.InferForwardHost(containerId, null, cancellationToken);
+        }
+
+        // Infer npm.proxy.port if not explicitly provided
+        if (!config.ForwardPort.HasValue)
+        {
+            var inferredPort = await _networkService.InferForwardPort(containerId, cancellationToken);
+            if (inferredPort.HasValue)
+            {
+                config.ForwardPort = inferredPort.Value;
+            }
+            else
+            {
+                _logger.LogError("❌ Cannot create proxy for container {ContainerId} proxy {Index}: No port specified and unable to auto-detect port from container",
+                    containerId, index);
+                return; // Skip this proxy configuration
+            }
+        }
+
+        // Auto-select certificate if SSL is forced but no certificate specified
+        if (config.SslForced && !config.CertificateId.HasValue)
+        {
+            var certId = await _certificateService.FindMatchingCertificateAsync(config.DomainNames, cancellationToken);
+            if (certId.HasValue)
+            {
+                config.CertificateId = certId.Value;
+                _logger.LogInformation("Auto-selected certificate ID {CertId} for proxy {Index} domains: {Domains}",
+                    certId.Value, index, string.Join(", ", config.DomainNames));
+            }
+            else
+            {
+                _logger.LogWarning("SSL forced but no matching certificate found for proxy {Index} domains: {Domains}",
+                    index, string.Join(", ", config.DomainNames));
+            }
+        }
+
+        _logger.LogInformation("Processing container {ContainerId} proxy {Index} with domains: {Domains}, host: {ForwardHost}:{ForwardPort}, cert_id: {CertId}",
+            containerId, index, string.Join(", ", config.DomainNames), config.ForwardHost, config.ForwardPort, config.CertificateId?.ToString() ?? "none");
+
+        var proxyKey = $"{containerId}:{index}";
+
+        // Check if proxy host already exists for this container:index
+        if (_containerProxyMap.TryGetValue(proxyKey, out var existingHostId))
+        {
+            // NPM doesn't support updates - any change requires delete + recreate
+            _logger.LogInformation("Labels changed for container {ContainerId} proxy {Index}. Deleting and recreating proxy host {HostId}.",
+                containerId, index, existingHostId);
+
+            // Remove the old proxy host
+            await RemoveProxy(containerId, index, cancellationToken);
+        }
+
+        // Create new proxy host
+        await CreateOrUpdateProxyHost(containerId, index, config, cancellationToken);
+    }
+
+    private async Task ProcessStreamConfig(string containerId, int index, StreamConfiguration config, CancellationToken cancellationToken)
+    {
+        // Infer npm.stream.forward.host if not explicitly provided
+        if (string.IsNullOrEmpty(config.ForwardHost))
+        {
+            config.ForwardHost = await _networkService.InferForwardHost(containerId, null, cancellationToken);
+        }
+
+        // Infer npm.stream.forward.port if not explicitly provided
+        if (!config.ForwardPort.HasValue)
+        {
+            var inferredPort = await _networkService.InferForwardPort(containerId, cancellationToken);
+            if (inferredPort.HasValue)
+            {
+                config.ForwardPort = inferredPort.Value;
+            }
+            else
+            {
+                _logger.LogError("❌ Cannot create stream for container {ContainerId} stream {Index}: No forward port specified and unable to auto-detect port from container",
+                    containerId, index);
+                return; // Skip this stream configuration
+            }
+        }
+
+        // Resolve SSL certificate if specified
+        if (!string.IsNullOrEmpty(config.SslCertificate))
+        {
+            // Check if it's a certificate ID (numeric) or domain name
+            if (int.TryParse(config.SslCertificate, out var certId))
+            {
+                config.CertificateId = certId;
+                _logger.LogInformation("Using explicit certificate ID {CertId} for stream {Index}",
+                    certId, index);
+            }
+            else
+            {
+                // It's a domain name, find matching certificate
+                var matchedCertId = await _certificateService.FindMatchingCertificateAsync(
+                    new List<string> { config.SslCertificate }, cancellationToken);
+
+                if (matchedCertId.HasValue)
+                {
+                    config.CertificateId = matchedCertId.Value;
+                    _logger.LogInformation("Matched certificate ID {CertId} for stream {Index} domain: {Domain}",
+                        matchedCertId.Value, index, config.SslCertificate);
+                }
+                else
+                {
+                    _logger.LogError("❌ Cannot create stream for container {ContainerId} stream {Index}: SSL certificate specified ({Domain}) but no matching certificate found",
+                        containerId, index, config.SslCertificate);
+                    return; // Skip this stream configuration
+                }
+            }
+        }
+
+        // Validate at least one forwarding protocol is enabled
+        if (!config.TcpForwarding && !config.UdpForwarding)
+        {
+            _logger.LogError("❌ Cannot create stream for container {ContainerId} stream {Index}: At least one of TCP or UDP forwarding must be enabled",
+                containerId, index);
+            return;
+        }
+
+        _logger.LogInformation("Processing container {ContainerId} stream {Index}: {IncomingPort} -> {ForwardHost}:{ForwardPort} (TCP:{Tcp}, UDP:{Udp}, SSL:{Ssl})",
+            containerId, index, config.IncomingPort, config.ForwardHost, config.ForwardPort,
+            config.TcpForwarding ? "yes" : "no",
+            config.UdpForwarding ? "yes" : "no",
+            config.CertificateId.HasValue ? config.CertificateId.Value.ToString() : "none");
+
+        var streamKey = $"{containerId}:{index}";
+
+        // Check if stream already exists for this container:index
+        if (_containerStreamMap.TryGetValue(streamKey, out var existingStreamId))
+        {
+            // NPM doesn't support updates - any change requires delete + recreate
+            _logger.LogInformation("Labels changed for container {ContainerId} stream {Index}. Deleting and recreating stream {StreamId}.",
+                containerId, index, existingStreamId);
+
+            // Remove the old stream
+            await RemoveStream(containerId, index, cancellationToken);
+        }
+
+        // Create new stream
+        await CreateStream(containerId, index, config, cancellationToken);
+    }
+
     public async Task RemoveContainer(string containerId, CancellationToken cancellationToken)
     {
         try
         {
-            if (_containerToProxyHostMap.TryRemove(containerId, out var proxyHostId))
+            // Find all proxies for this container
+            var proxyKeys = _containerProxyMap.Keys
+                .Where(k => k.StartsWith($"{containerId}:"))
+                .ToList();
+
+            // Find all streams for this container
+            var streamKeys = _containerStreamMap.Keys
+                .Where(k => k.StartsWith($"{containerId}:"))
+                .ToList();
+
+            if (proxyKeys.Count == 0 && streamKeys.Count == 0)
             {
-                _logger.LogInformation("Removing proxy host {HostId} for container {ContainerId}",
-                    proxyHostId, containerId);
-
-                await _npmClient.DeleteProxyHostAsync(proxyHostId, cancellationToken);
-
-                // Remove label hash tracking
-                _containerLabelHashes.TryRemove(containerId, out _);
-
-                // Trigger mirror sync if configured
-                _mirrorSyncService?.RequestSync();
+                _logger.LogDebug("No proxy or stream mappings found for container {ContainerId}", containerId);
+                return;
             }
-            else
+
+            _logger.LogInformation("Removing {ProxyCount} proxy(s) and {StreamCount} stream(s) for container {ContainerId}",
+                proxyKeys.Count, streamKeys.Count, containerId);
+
+            foreach (var proxyKey in proxyKeys)
             {
-                _logger.LogDebug("No proxy host mapping found for container {ContainerId}", containerId);
+                var index = int.Parse(proxyKey.Split(':')[1]);
+                await RemoveProxy(containerId, index, cancellationToken);
             }
+
+            foreach (var streamKey in streamKeys)
+            {
+                var index = int.Parse(streamKey.Split(':')[1]);
+                await RemoveStream(containerId, index, cancellationToken);
+            }
+
+            // Remove label hash tracking
+            _containerLabelHashes.TryRemove(containerId, out _);
+
+            // Trigger mirror sync if configured
+            _mirrorSyncService?.RequestSync();
         }
         catch (Exception ex)
         {
@@ -166,42 +339,107 @@ public class SyncOrchestrator
         }
     }
 
-    private async Task CreateOrUpdateProxyHost(string containerId, ProxyConfiguration config, CancellationToken cancellationToken)
+    private async Task RemoveProxy(string containerId, int index, CancellationToken cancellationToken)
+    {
+        var proxyKey = $"{containerId}:{index}";
+
+        if (_containerProxyMap.TryRemove(proxyKey, out var proxyHostId))
+        {
+            _logger.LogInformation("Removing proxy host {HostId} for container {ContainerId} proxy {Index}",
+                proxyHostId, containerId, index);
+
+            try
+            {
+                await _npmClient.DeleteProxyHostAsync(proxyHostId, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error deleting proxy host {HostId} for container {ContainerId} proxy {Index}",
+                    proxyHostId, containerId, index);
+            }
+        }
+    }
+
+    private async Task RemoveStream(string containerId, int index, CancellationToken cancellationToken)
+    {
+        var streamKey = $"{containerId}:{index}";
+
+        if (_containerStreamMap.TryRemove(streamKey, out var streamId))
+        {
+            _logger.LogInformation("Removing stream {StreamId} for container {ContainerId} stream {Index}",
+                streamId, containerId, index);
+
+            try
+            {
+                await _npmClient.DeleteStreamAsync(streamId, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error deleting stream {StreamId} for container {ContainerId} stream {Index}",
+                    streamId, containerId, index);
+            }
+        }
+    }
+
+    private async Task CreateStream(string containerId, int index, StreamConfiguration config, CancellationToken cancellationToken)
+    {
+        var streamKey = $"{containerId}:{index}";
+
+        try
+        {
+            var request = _labelParser.ToStreamRequest(config, containerId, _instanceId!, _npmUrl);
+            var stream = await _npmClient.CreateStreamAsync(request, cancellationToken);
+
+            _containerStreamMap.AddOrUpdate(streamKey, stream.Id, (_, _) => stream.Id);
+
+            _logger.LogInformation("✅ Created stream {StreamId} for container {ContainerId} stream {Index}: {IncomingPort} -> {ForwardHost}:{ForwardPort}",
+                stream.Id, containerId, index, config.IncomingPort, config.ForwardHost, config.ForwardPort);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ Failed to create stream for container {ContainerId} stream {Index}", containerId, index);
+            throw;
+        }
+    }
+
+    private async Task CreateOrUpdateProxyHost(string containerId, int index, ProxyConfiguration config, CancellationToken cancellationToken)
     {
         // Check if a proxy host already exists for ANY of the specified domains
         if (config.DomainNames == null || config.DomainNames.Count == 0)
         {
-            _logger.LogWarning("No domain names configured for container {ContainerId}", containerId);
+            _logger.LogWarning("No domain names configured for container {ContainerId} proxy {Index}", containerId, index);
             return;
         }
+
+        var proxyKey = $"{containerId}:{index}";
 
         // Check for any existing proxy host with overlapping domains
         var existingHost = await _npmClient.GetProxyHostByDomainsAsync(config.DomainNames, cancellationToken);
 
         if (existingHost != null)
         {
-            _logger.LogDebug("Found existing proxy host {HostId} for domains [{Domains}]", 
+            _logger.LogDebug("Found existing proxy host {HostId} for domains [{Domains}]",
                 existingHost.Id, string.Join(", ", config.DomainNames));
-            
+
             // Check if the existing host is managed by THIS instance
             if (!NginxProxyManagerClient.IsAutomationManaged(existingHost, _instanceId!))
             {
-                _logger.LogError("⚠️  CONFLICT: Found existing proxy host {HostId} with domains [{ExistingDomains}] that overlaps with requested domains [{RequestedDomains}]",
-                    existingHost.Id, 
+                _logger.LogError("⚠️ CONFLICT: Found existing proxy host {HostId} with domains [{ExistingDomains}] that overlaps with requested domains [{RequestedDomains}]",
+                    existingHost.Id,
                     string.Join(", ", existingHost.DomainNames ?? new List<string>()),
                     string.Join(", ", config.DomainNames));
-                
-                _logger.LogError("⚠️  This proxy is NOT managed by this automation instance (ID: {InstanceId})", _instanceId);
+
+                _logger.LogError("⚠️ This proxy is NOT managed by this automation instance (ID: {InstanceId})", _instanceId);
 
                 var otherInstance = NginxProxyManagerClient.GetManagedInstanceId(existingHost);
                 if (otherInstance != null)
                 {
-                    _logger.LogError("⚠️  Existing proxy is managed by instance: {OtherInstance}", otherInstance);
+                    _logger.LogError("⚠️ Existing proxy is managed by instance: {OtherInstance}", otherInstance);
                 }
                 else
                 {
-                    _logger.LogError("⚠️  Existing proxy appears to be manually created (no automation metadata).");
-                    _logger.LogError("⚠️  To resolve: Delete the proxy in NPM UI, or remove npm.* labels from container {ContainerId}", containerId);
+                    _logger.LogError("⚠️ Existing proxy appears to be manually created (no automation metadata).");
+                    _logger.LogError("⚠️ To resolve: Delete the proxy in NPM UI, or remove npm.* labels from container {ContainerId} proxy {Index}", containerId, index);
                 }
                 return;
             }
@@ -215,9 +453,9 @@ public class SyncOrchestrator
             var request = _labelParser.ToProxyHostRequest(config, containerId, _instanceId!, _npmUrl);
             var newHost = await _npmClient.CreateProxyHostAsync(request, cancellationToken);
 
-            _containerToProxyHostMap.AddOrUpdate(containerId, newHost.Id, (_, _) => newHost.Id);
+            _containerProxyMap.AddOrUpdate(proxyKey, newHost.Id, (_, _) => newHost.Id);
 
-            _logger.LogInformation("✅ Recreated proxy host {HostId} for container {ContainerId}", newHost.Id, containerId);
+            _logger.LogInformation("✅ Recreated proxy host {HostId} for container {ContainerId} proxy {Index}", newHost.Id, containerId, index);
         }
         else
         {
@@ -229,15 +467,15 @@ public class SyncOrchestrator
                 var request = _labelParser.ToProxyHostRequest(config, containerId, _instanceId!, _npmUrl);
                 var newHost = await _npmClient.CreateProxyHostAsync(request, cancellationToken);
 
-                _containerToProxyHostMap.AddOrUpdate(containerId, newHost.Id, (_, _) => newHost.Id);
+                _containerProxyMap.AddOrUpdate(proxyKey, newHost.Id, (_, _) => newHost.Id);
 
-                _logger.LogInformation("✅ Created proxy host {HostId} for container {ContainerId}",
-                    newHost.Id, containerId);
+                _logger.LogInformation("✅ Created proxy host {HostId} for container {ContainerId} proxy {Index}",
+                    newHost.Id, containerId, index);
             }
             catch (HttpRequestException ex) when (ex.Message.Contains("already in use") || ex.StatusCode == System.Net.HttpStatusCode.BadRequest)
             {
-                _logger.LogError("❌ Failed to create proxy host: One or more domains [{Domains}] are already in use in NPM",
-                    string.Join(", ", config.DomainNames));
+                _logger.LogError("❌ Failed to create proxy host for container {ContainerId} proxy {Index}: One or more domains [{Domains}] are already in use in NPM",
+                    containerId, index, string.Join(", ", config.DomainNames));
                 _logger.LogError("❌ This likely means a manually created proxy exists but wasn't detected. Check NPM UI for existing proxies with these domains.");
                 _logger.LogError("❌ NPM API Error: {ErrorMessage}", ex.Message);
                 throw;
