@@ -8,10 +8,11 @@ using NpmDockerSync.Services;
 
 var builder = Host.CreateApplicationBuilder(args);
 
-// Add configuration
+// Add configuration sources (order matters: later sources override earlier ones)
+builder.Configuration.AddJsonFile("appsettings.json", optional: false, reloadOnChange: true);
 builder.Configuration.AddEnvironmentVariables();
 
-// Configure logging with cleaner console output
+// Configure logging - must clear providers FIRST, then add formatter, then console with formatter name
 builder.Logging.ClearProviders();
 builder.Logging.AddConsoleFormatter<SimpleConsoleFormatter, CustomConsoleFormatterOptions>(options =>
 {
@@ -21,6 +22,8 @@ builder.Logging.AddConsole(options =>
 {
     options.FormatterName = "simple";
 });
+// Apply log level filters from appsettings.json AFTER adding console provider
+builder.Logging.AddConfiguration(builder.Configuration.GetSection("Logging"));
 
 // Register Docker client
 builder.Services.AddSingleton(sp =>
