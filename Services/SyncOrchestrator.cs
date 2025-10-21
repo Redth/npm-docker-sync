@@ -151,7 +151,21 @@ public class SyncOrchestrator
             // If labels haven't changed AND we have existing mappings, skip processing
             if (!hasChanged)
             {
-                _logger.LogDebug("Labels unchanged for container {ContainerId}, skipping", containerId);
+                // Check if we have existing proxies/streams to determine if this is a restored state scenario
+                var hasExistingProxies = _containerProxyMap.Keys.Any(k => k.StartsWith($"{containerId}:"));
+                var hasExistingStreams = _containerStreamMap.Keys.Any(k => k.StartsWith($"{containerId}:"));
+
+                if (hasExistingProxies || hasExistingStreams)
+                {
+                    _logger.LogInformation("✓ Container {ContainerName} unchanged - {ProxyCount} proxy(s), {StreamCount} stream(s) already managed",
+                        containerName,
+                        _containerProxyMap.Keys.Count(k => k.StartsWith($"{containerId}:")),
+                        _containerStreamMap.Keys.Count(k => k.StartsWith($"{containerId}:")));
+                }
+                else
+                {
+                    _logger.LogDebug("Labels unchanged for container {ContainerName}, skipping", containerName);
+                }
                 return;
             }
 
