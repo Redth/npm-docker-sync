@@ -154,10 +154,10 @@ public class LabelParser
     private bool GetConfigBool(string key, bool defaultValue)
     {
         var value = _configuration[key];
-        
+
         if (string.IsNullOrEmpty(value))
             return defaultValue;
-        
+
         return value.ToLowerInvariant() is "true" or "1" or "yes" or "on";
     }
 
@@ -171,7 +171,7 @@ public class LabelParser
             if (!string.IsNullOrEmpty(explicitValue))
                 return explicitValue;
         }
-        
+
         // Try with the provided prefix (either "N." or "" for backward compat)
         return GetLabelValue(labels, $"{type}.{prefix}{suffix}", index);
     }
@@ -179,10 +179,10 @@ public class LabelParser
     private bool GetProxyBoolLabel(IDictionary<string, string> labels, string type, string prefix, string suffix, int index, bool defaultValue)
     {
         var value = GetProxyLabelValue(labels, type, prefix, suffix, index);
-        
+
         if (string.IsNullOrEmpty(value))
             return defaultValue;
-        
+
         return value.ToLowerInvariant() is "true" or "1" or "yes" or "on";
     }
 
