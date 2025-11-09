@@ -62,13 +62,14 @@ public class LabelParser
 
     private ProxyConfiguration? ParseProxyConfig(IDictionary<string, string> labels, int index)
     {
+        // For index 0, check both explicit "0." and implicit "" (backward compatibility)
         var prefix = index > 0 ? $"{index}." : "";
 
         // Support both npm. and npm- prefixes
-        var domainNames = GetLabelValue(labels, $"proxy.{prefix}domains", index);
+        var domainNames = GetProxyLabelValue(labels, "proxy", prefix, "domains", index);
         if (string.IsNullOrEmpty(domainNames))
         {
-            domainNames = GetLabelValue(labels, $"proxy.{prefix}domain", index);
+            domainNames = GetProxyLabelValue(labels, "proxy", prefix, "domain", index);
 
             if (string.IsNullOrEmpty(domainNames))
             {
@@ -77,8 +78,8 @@ public class LabelParser
             }
         }
 
-        var forwardHost = GetLabelValue(labels, $"proxy.{prefix}host", index);
-        var forwardPortStr = GetLabelValue(labels, $"proxy.{prefix}port", index);
+        var forwardHost = GetProxyLabelValue(labels, "proxy", prefix, "host", index);
+        var forwardPortStr = GetProxyLabelValue(labels, "proxy", prefix, "port", index);
 
         // Parse port if provided, otherwise it will be inferred later
         int? forwardPort = null;
@@ -100,26 +101,26 @@ public class LabelParser
                 .ToList(),
             ForwardHost = forwardHost?.Trim() ?? string.Empty, // Can be empty, will be inferred later
             ForwardPort = forwardPort, // Can be null, will be inferred later
-            ForwardScheme = GetLabelValue(labels, $"proxy.{prefix}scheme", index) ?? "http",
-            SslForced = GetBoolLabel(labels, $"proxy.{prefix}ssl.force", index, GetConfigBool("NPM_PROXY_SSL_FORCE", false)),
-            CachingEnabled = GetBoolLabel(labels, $"proxy.{prefix}caching", index, GetConfigBool("NPM_PROXY_CACHING", false)),
-            BlockExploits = GetBoolLabel(labels, $"proxy.{prefix}block_common_exploits", index, GetConfigBool("NPM_PROXY_BLOCK_EXPLOITS", true)),
-            AllowWebsocketUpgrade = GetBoolLabel(labels, $"proxy.{prefix}websockets", index, GetConfigBool("NPM_PROXY_WEBSOCKETS", false)),
-            Http2Support = GetBoolLabel(labels, $"proxy.{prefix}ssl.http2", index, GetConfigBool("NPM_PROXY_HTTP2", false)),
-            HstsEnabled = GetBoolLabel(labels, $"proxy.{prefix}ssl.hsts", index, GetConfigBool("NPM_PROXY_HSTS", false)),
-            HstsSubdomains = GetBoolLabel(labels, $"proxy.{prefix}ssl.hsts.subdomains", index, GetConfigBool("NPM_PROXY_HSTS_SUBDOMAINS", false)),
-            AdvancedConfig = GetLabelValue(labels, $"proxy.{prefix}advanced.config", index) ?? string.Empty,
+            ForwardScheme = GetProxyLabelValue(labels, "proxy", prefix, "scheme", index) ?? "http",
+            SslForced = GetProxyBoolLabel(labels, "proxy", prefix, "ssl.force", index, GetConfigBool("NPM_PROXY_SSL_FORCE", false)),
+            CachingEnabled = GetProxyBoolLabel(labels, "proxy", prefix, "caching", index, GetConfigBool("NPM_PROXY_CACHING", false)),
+            BlockExploits = GetProxyBoolLabel(labels, "proxy", prefix, "block_common_exploits", index, GetConfigBool("NPM_PROXY_BLOCK_EXPLOITS", true)),
+            AllowWebsocketUpgrade = GetProxyBoolLabel(labels, "proxy", prefix, "websockets", index, GetConfigBool("NPM_PROXY_WEBSOCKETS", false)),
+            Http2Support = GetProxyBoolLabel(labels, "proxy", prefix, "ssl.http2", index, GetConfigBool("NPM_PROXY_HTTP2", false)),
+            HstsEnabled = GetProxyBoolLabel(labels, "proxy", prefix, "ssl.hsts", index, GetConfigBool("NPM_PROXY_HSTS", false)),
+            HstsSubdomains = GetProxyBoolLabel(labels, "proxy", prefix, "ssl.hsts.subdomains", index, GetConfigBool("NPM_PROXY_HSTS_SUBDOMAINS", false)),
+            AdvancedConfig = GetProxyLabelValue(labels, "proxy", prefix, "advanced.config", index) ?? string.Empty,
         };
 
         // Parse certificate_id if provided
-        var certIdStr = GetLabelValue(labels, $"proxy.{prefix}ssl.certificate.id", index);
+        var certIdStr = GetProxyLabelValue(labels, "proxy", prefix, "ssl.certificate.id", index);
         if (!string.IsNullOrEmpty(certIdStr) && int.TryParse(certIdStr, out var certId))
         {
             config.CertificateId = certId;
         }
 
         // Parse access_list_id if provided
-        var accessListIdStr = GetLabelValue(labels, $"proxy.{prefix}accesslist.id", index);
+        var accessListIdStr = GetProxyLabelValue(labels, "proxy", prefix, "accesslist.id", index);
         if (!string.IsNullOrEmpty(accessListIdStr) && int.TryParse(accessListIdStr, out var accessListId))
         {
             config.AccessListId = accessListId;
@@ -153,6 +154,31 @@ public class LabelParser
     private bool GetConfigBool(string key, bool defaultValue)
     {
         var value = _configuration[key];
+        
+        if (string.IsNullOrEmpty(value))
+            return defaultValue;
+        
+        return value.ToLowerInvariant() is "true" or "1" or "yes" or "on";
+    }
+
+    private string? GetProxyLabelValue(IDictionary<string, string> labels, string type, string prefix, string suffix, int index)
+    {
+        // For index 0, try explicit "0." first, then fall back to implicit "" (backward compatibility)
+        if (index == 0)
+        {
+            // Try explicit index 0 first
+            var explicitValue = GetLabelValue(labels, $"{type}.0.{suffix}", index);
+            if (!string.IsNullOrEmpty(explicitValue))
+                return explicitValue;
+        }
+        
+        // Try with the provided prefix (either "N." or "" for backward compat)
+        return GetLabelValue(labels, $"{type}.{prefix}{suffix}", index);
+    }
+
+    private bool GetProxyBoolLabel(IDictionary<string, string> labels, string type, string prefix, string suffix, int index, bool defaultValue)
+    {
+        var value = GetProxyLabelValue(labels, type, prefix, suffix, index);
         
         if (string.IsNullOrEmpty(value))
             return defaultValue;
@@ -207,10 +233,11 @@ public class LabelParser
 
     private StreamConfiguration? ParseStreamConfig(IDictionary<string, string> labels, int index)
     {
+        // For index 0, check both explicit "0." and implicit "" (backward compatibility)
         var prefix = index > 0 ? $"{index}." : "";
 
         // incoming.port is required
-        var incomingPortStr = GetLabelValue(labels, $"stream.{prefix}incoming.port", index);
+        var incomingPortStr = GetProxyLabelValue(labels, "stream", prefix, "incoming.port", index);
         if (string.IsNullOrEmpty(incomingPortStr) || !int.TryParse(incomingPortStr, out var incomingPort))
         {
             _logger.LogDebug("No valid npm.stream.incoming.port found for index {Index}", index);
@@ -219,14 +246,14 @@ public class LabelParser
 
         // Parse forward port (optional, will be inferred later)
         int? forwardPort = null;
-        var forwardPortStr = GetLabelValue(labels, $"stream.{prefix}forward.port", index);
+        var forwardPortStr = GetProxyLabelValue(labels, "stream", prefix, "forward.port", index);
         if (!string.IsNullOrEmpty(forwardPortStr) && int.TryParse(forwardPortStr, out var parsedPort))
         {
             forwardPort = parsedPort;
         }
 
-        var forwardHost = GetLabelValue(labels, $"stream.{prefix}forward.host", index);
-        var sslValue = GetLabelValue(labels, $"stream.{prefix}ssl", index);
+        var forwardHost = GetProxyLabelValue(labels, "stream", prefix, "forward.host", index);
+        var sslValue = GetProxyLabelValue(labels, "stream", prefix, "ssl", index);
 
         var config = new StreamConfiguration
         {
@@ -234,8 +261,8 @@ public class LabelParser
             IncomingPort = incomingPort,
             ForwardHost = forwardHost?.Trim() ?? string.Empty, // Can be empty, will be inferred later
             ForwardPort = forwardPort, // Can be null, will be inferred later
-            TcpForwarding = GetBoolLabel(labels, $"stream.{prefix}forward.tcp", index, true), // Default: TCP enabled
-            UdpForwarding = GetBoolLabel(labels, $"stream.{prefix}forward.udp", index, false), // Default: UDP disabled
+            TcpForwarding = GetProxyBoolLabel(labels, "stream", prefix, "forward.tcp", index, true), // Default: TCP enabled
+            UdpForwarding = GetProxyBoolLabel(labels, "stream", prefix, "forward.udp", index, false), // Default: UDP disabled
             SslCertificate = sslValue?.Trim() // Can be cert ID or domain name, will be resolved later
         };
 
